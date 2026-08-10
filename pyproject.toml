@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rydsim"
+version = "0.1.0"
+description = "GreyNOC RydSim — scientifically validated Rydberg-atom electrometry simulator (EIT/Autler-Townes, Stark, superheterodyne) with calibration-study findings pipeline"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "GreyNOC" }]
+dependencies = [
+    "numpy>=1.26",
+    "scipy>=1.11",
+    "matplotlib>=3.8",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "pytest-xdist>=3"]
+
+[project.scripts]
+rydsim = "rydsim.cli:main"
+
+[project.gui-scripts]
+rydsim-gui = "rydsim.gui.app:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
