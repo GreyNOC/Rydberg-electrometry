@@ -1,0 +1,226 @@
+# Rydberg Electrometry — Research Study Report
+
+**Prepared for:** GreyNOC / Rydberg-electrometry research archive
+**Date:** 2026-08-10
+**Status:** Foundational briefing — literature current through mid-2026
+
+---
+
+## 1. Executive Summary
+
+Rydberg electrometry is the use of atoms excited to very high principal quantum numbers (n ≈ 30–100+) as quantum sensors for electric fields, spanning DC through terahertz. The field moved from a laboratory curiosity to a serious metrology and RF-receiver technology in roughly one decade, anchored by the 2012 Sedlacek et al. demonstration of microwave electrometry in a room-temperature vapor cell. Today it underpins three converging research programs: SI-traceable field metrology (NIST-led), atomic RF receivers for communications and spectrum sensing (defense-funded, DARPA and international equivalents), and quantum-limited weak-field detection (academic frontier).
+
+The core value proposition: a Rydberg vapor cell is a self-calibrating, antenna-free, all-dielectric field probe whose response traces directly to Planck's constant and known atomic structure. It does not perturb the field it measures the way a metal antenna does, its sensing volume can be far smaller than the RF wavelength, and a single physical sensor can cover a frequency span that would require an entire rack of conventional antennas and front ends.
+
+Current state of the art (as of mid-2026): sensitivities in the ~10 nV/cm/√Hz class at microwave frequencies approaching the standard quantum limit; continuous (not just resonant) coverage demonstrated across 1–40 GHz; instantaneous bandwidths pushed past 50 MHz; kHz-band and quasi-DC sensing solved via cell-material engineering; and active government programs (DARPA SBIR, DRDO, and PRC groups) racing to ruggedize chip-scale versions.
+
+---
+
+## 2. Physics Foundations
+
+### 2.1 What a Rydberg atom is
+
+A Rydberg atom is any atom with one valence electron promoted to a state of large principal quantum number n. The workhorse species are alkali atoms — rubidium (Rb-85/87) and cesium (Cs-133) — because their single valence electron makes them hydrogen-like and their D-line transitions sit at convenient diode-laser wavelengths.
+
+Key scaling laws with n (the reason everything works):
+
+| Property | Scaling | Consequence |
+|---|---|---|
+| Orbital radius | n² | Enormous electron wavefunction extent |
+| Binding energy | n⁻² | Levels crowd together near ionization |
+| Adjacent-level spacing | n⁻³ | Transitions between Rydberg levels fall in the MHz–THz range |
+| Transition dipole moment (Rydberg↔Rydberg) | n² | Dipole moments thousands of atomic units — extreme RF coupling |
+| Polarizability | n⁷ | Extreme sensitivity to static/slow fields (Stark effect) |
+| Radiative lifetime | n³ | Long-lived states, narrow lines |
+
+The n² dipole moments between neighboring Rydberg states are the heart of RF electrometry: a weak RF field resonant with a Rydberg–Rydberg transition drives the atom strongly, producing spectroscopic signatures far larger than any classical antenna's response per unit volume.
+
+### 2.2 The Stark effect
+
+An external electric field shifts Rydberg energy levels. For non-degenerate low-ℓ states of alkalis, the shift is quadratic in field (ΔE = −½αE², with polarizability α scaling as n⁷). This is the readout mechanism for DC, power-line-frequency, and far-detuned AC fields: measure the level shift spectroscopically, invert to field strength. High-ℓ manifolds show linear Stark fans, which are used when maximum DC sensitivity is needed.
+
+### 2.3 Electromagnetically induced transparency (EIT)
+
+The problem: Rydberg states are optically almost dark — you cannot easily watch them directly in a hot vapor. The solution (Mohapatra, Jackson & Adams, 2007) is ladder-type EIT:
+
+1. A weak **probe** laser (e.g., 780 nm in Rb) drives the ground → first excited state (5S₁/₂ → 5P₃/₂).
+2. A strong **coupling** laser (e.g., 480 nm) drives the first excited state → Rydberg state (5P₃/₂ → nD or nS).
+3. When both are resonant, quantum interference opens a narrow transparency window in the probe absorption.
+
+The probe transmission is now an all-optical, real-time readout of the Rydberg level structure. Anything that perturbs the Rydberg state — an RF field, a DC field — visibly reshapes the EIT line. No electrodes, no metal, no cryogenics: a glass cell of warm vapor and two lasers.
+
+### 2.4 Autler–Townes (AT) splitting
+
+Apply an RF field resonant with a transition between the probed Rydberg state and a neighboring one. The RF dresses the two levels and the single EIT peak splits into two. The splitting is:
+
+Δf_AT = Ω_RF / 2π = d·E / h
+
+where d is the (calculable) transition dipole moment and E the RF field amplitude. Measure the splitting in Hz, divide by a known atomic constant, and you have the field in V/m — traceable to Planck's constant and atomic structure, with no calibration against another field standard. This is the "atomic ruler" that made NIST adopt the technique for SI-traceable field metrology.
+
+### 2.5 Detection regimes
+
+- **Resonant AT regime** (strong fields, ≳ mV/cm): read the splitting directly. Self-calibrated, accurate, moderate sensitivity.
+- **Amplitude regime** (weak resonant fields): splitting is unresolved; read EIT peak height/width changes. More sensitive, less directly traceable.
+- **AC Stark / off-resonant regime**: field is far from any Rydberg–Rydberg resonance; read the quadratic level shift. Enables continuous frequency coverage and DC/voltage metrology.
+- **Superheterodyne regime** (the modern workhorse — see §4.1): add a local oscillator field; read a beat note. Orders of magnitude more sensitive, plus phase.
+
+---
+
+## 3. Historical Development — The Papers That Built the Field
+
+**1999 — Osterwalder & Merkt (PRL 82, 1831):** high Rydberg states proposed and used as electric field sensors — the conceptual origin of modern Rydberg electrometry.
+
+**2007 — Mohapatra, Jackson & Adams (PRL 98, 113003):** coherent optical (EIT) detection of Rydberg states in thermal vapor. The enabling readout.
+
+**2010 — Kübler, Shaffer, Löw, Pfau et al. (Nature Photonics 4, 112):** coherent Rydberg excitation in micrometer-sized vapor cells — miniaturization proof, essential for high-frequency and sub-wavelength work. Also 2010: Gordon, Holloway et al. (IEEE EMC Symposium) propose the quantum-based SI-traceable E-field probe.
+
+**2012 — Sedlacek et al. (Nature Physics 8, 819):** the landmark. Microwave electrometry with Rydberg atoms in a vapor cell using bright atomic resonances (AT splitting). Field detection at the μV/cm scale, room temperature. Every subsequent paper cites this.
+
+**2014 — Holloway et al. (IEEE Trans. Antennas & Propagation):** broadband, self-calibrated Rydberg probe; sub-wavelength field imaging. NIST's program becomes the metrology backbone.
+
+**2015 — Fan et al. (J. Phys. B 48, 202001):** atom-based sensing "from radio to terahertz" — establishes the enormous frequency reach.
+
+**2017 — Kumar, Fan, Kübler, Sheng & Shaffer (Sci. Rep. 7, 42981):** optical homodyne readout for weak RF fields — the first big sensitivity-enhancement architecture beyond bare EIT/AT.
+
+**2019–2020 — Atomic receivers:** NIST and Army Research Lab demonstrate reception of AM/FM audio, pseudorandom bit streams, phase detection, angle-of-arrival, even streaming TV/video through a vapor cell (Prajapati et al., AVS Quantum Sci. 4, 2022). Meyer, Cox & Kunz (J. Phys. B 53, 034001) publish the sober wideband-sensing assessment that frames realistic performance bounds.
+
+**2020 — Jing et al. (Nature Physics 16, 911): the atomic superheterodyne.** A resonant local-oscillator microwave field dresses the atoms; the weak signal field beats against it, producing an audio/RF-frequency modulation of the probe transmission. Sensitivity of 55 nV/cm/√Hz — roughly two orders beyond prior art — plus direct phase and frequency resolution. This architecture now dominates the field.
+
+**2020 — Jau & Carter (Phys. Rev. Applied 13, 054034):** vapor-cell electrometry below 1 kHz, opening the low-frequency end and confronting the alkali-adsorption screening problem head-on.
+
+**2022 — Holloway et al. (AVS Quantum Sci. 4, 034401):** EIT-based Rydberg sensor for traceable **voltage** measurements — extending the SI-traceability story from fields to volts.
+
+**2024 — Romalis group, Princeton (arXiv:2406.05106):** time-separated-field (Ramsey-style) vapor-cell electrometry — excitation, free evolution between Rydberg levels in the dark, then state-dependent detection — reaching 10 nV/cm/√Hz at 10 GHz and mapping Rydberg coherence relaxation in cells.
+
+**2024 — Nature Reviews Physics (s42254-024-00756-7):** the authoritative modern review: "Rydberg states of alkali atoms in atomic vapour as SI-traceable field probes and communications receivers." Read this first.
+
+---
+
+## 4. Modern Measurement Architectures (2020–2026)
+
+### 4.1 Superheterodyne ("superhet") — the default
+
+Signal + strong resonant LO field → atoms act as a square-law mixer → probe transmission oscillates at the intermediate (difference) frequency → lock-in/digitizer readout. Gains: sensitivity (LO-boosted transduction slope), phase recovery, frequency discrimination, and compatibility with standard RF DSP downstream. Refinements through 2025–2026 include Mach–Zehnder interferometric probe readout (Yang et al., PRA 19, 064021), self-heterodyne frequency-comb preparation (Dixon et al., PRA 19, 034078), cavity-enhanced superhets, and characterized linear dynamic range (PRA 107, 043108).
+
+### 4.2 Approaching the standard quantum limit
+
+A 2023–2024 Science Advances result (10.1126/sciadv.ads0683) systematically strangled technical noise in a superhet electrometer, cutting equivalent noise temperature ~20× and landing at **10.0 nV/cm/√Hz, a factor of 2.6 above the standard quantum limit**. This is the current benchmark for how close vapor-cell electrometry sits to fundamental atom-projection-noise bounds.
+
+### 4.3 Continuous frequency coverage
+
+Native Rydberg sensitivity is comb-like — high only at discrete Rydberg–Rydberg resonances. Fixes now demonstrated:
+
+- **Zeeman tuning** of the level structure with applied magnetic fields: continuous 1–40 GHz coverage at ≤65 nV/cm/√Hz (Communications Physics, 2026) — two to three orders better than earlier continuous-coverage schemes.
+- **AC-Stark / far-detuned operation** for arbitrary carriers at reduced sensitivity.
+- **High-ℓ / orbital-angular-momentum state engineering**: simultaneous multi-band detection reported from 128 MHz to 0.61 THz in a single optical receiver.
+- **Multi-wave mixing / frequency conversion** inside the vapor for band translation.
+
+### 4.4 Instantaneous bandwidth
+
+Historically the weak spot (EIT dynamics limit response to ~1–10 MHz). Multi-dress-state engineering (arXiv:2506.10541, 2025) demonstrated **140.4 nV/cm/√Hz sensitivity with 54.6 MHz instantaneous bandwidth** in thermal ⁸⁷Rb — the first credible 100-MHz-class trajectory. Pulsed-field IEEE work has observed 10-ns-scale transient atomic response, setting a much higher ultimate ceiling.
+
+### 4.5 Low-frequency and DC sensing
+
+kHz-and-below fields are screened by free charges and alkali atoms adsorbed on cell walls. Countermeasures now published: sapphire vapor cells with engineered resistivity plus "self-dressing" of the coupling-laser-induced DC field, achieving **13.5 nV/cm/√Hz at 100 kHz** (npj Quantum Materials, 2026); Zeeman-referenced frequency locking to track true Stark shifts against internal screening fields (J. Appl. Phys. 138, 094501, 2025); Rydberg-atom interferometry for DC and power-frequency fields (APL 127, 024002, 2025); and even Stark-modulated dissipative time crystals for sub-kHz sensing (Sci. Rep. 15, 2025).
+
+### 4.6 Other active directions
+
+Three-photon excitation ladders with fluorescence readout (wide dynamic range, spatial resolution beyond transmission — Sensors 25, 7185, 2025); quantum weak-measurement amplification of dispersion signals (Comms. Phys. 8, 144, 2025); compressive/spectrally multiplexed spectrum sensing (arXiv:2607.02001, 2026); blockade and networked atom arrays for entanglement-enhanced, spatially resolved field mapping; hybrid antenna/cavity-coupled cells (21 nV/cm/√Hz at 3.8 GHz, mid-2025).
+
+---
+
+## 5. Performance Snapshot (mid-2026)
+
+| Metric | State of the art | Reference class |
+|---|---|---|
+| Microwave sensitivity | ~10 nV/cm/√Hz (2.6× above SQL) | Science Advances SQL paper; Princeton time-separated fields |
+| Continuous-band sensitivity | ≤65 nV/cm/√Hz across 1–40 GHz | Zeeman-modulated superhet (Comms. Phys. 2026) |
+| kHz-band sensitivity | 13.5 nV/cm/√Hz @ 100 kHz | Sapphire-cell self-dressing (npj QM 2026) |
+| Instantaneous bandwidth | 54.6 MHz (with 140 nV/cm/√Hz) | Multi-dress-state (arXiv:2506.10541) |
+| Frequency reach | ~DC to 0.61+ THz demonstrated | Multi-band OAM-state receivers; THz EIT work |
+| Traceability | SI-traceable E-field and voltage | NIST AT-splitting and voltage-standard papers |
+
+Context for the numbers: a typical GPS front end works at roughly the 1 nV/cm/√Hz-equivalent level, so the best vapor cells are now within ~10× of mainstream engineered receivers — while remaining absolute, self-calibrated, and antenna-free. Conventional narrowband antennas still beat atoms on raw sensitivity per band; atoms win on span, traceability, sub-wavelength size, and stealth (all-dielectric, near-zero scattering cross-section).
+
+---
+
+## 6. Applications
+
+**Metrology (mature):** SI-traceable RF field standards, antenna and probe calibration, EMC testing, traceable voltage, sub-wavelength and near-field imaging, characterization of materials and electronics across the RF spectrum. NIST Boulder (Holloway, Simons, Artusio-Glimpse, Prajapati, Berweger, Rotunno et al.) is the canonical group.
+
+**Communications (advanced prototyping):** atomic receivers demodulating AM/FM/PSK/QAM, multi-carrier and multi-band reception in one cell, TV/video streaming demos, phase and angle-of-arrival recovery. The 2026 "Rydberg Atomic Quantum Radio" survey (arXiv:2607.05931) is the definitive wireless-engineering treatment, framing atomic receivers for 6G/SAGSIN contexts: full-spectrum agility, ultra-high sensitivity, anti-jamming resilience.
+
+**Defense / spectrum awareness (funded, accelerating):** DARPA's 2026 SBIR call seeks low-SWaP ruggedized Rydberg receivers for real-time wideband detection and spectrum awareness (up to $5M, chip-scale photonics emphasis). India's DRDO announced a next-generation Rydberg RF sensing prototype in 2026 targeting communications, surveillance, and EW. Quantum-radar receiver concepts (IEEE APSCON 2026) claim SNR and Doppler-estimation advantages over dipole-antenna front ends. Relevant properties: no metal aperture to detect or couple into, one sensor spanning HF-to-THz, absolute field measurement for ELINT-grade characterization.
+
+**Commercial:** Rydberg Technologies (Ann Arbor, MI — Anderson/Raithel lineage, self-calibrated SI-traceable probe instrument, IEEE TAP 69, 5931) sells atomic RF probes and receivers; Infleqtion/ColdQuanta and others ship vapor-cell and photonics building blocks. Notable for GreyNOC: this is a Michigan company and the most mature commercial vendor in the space.
+
+**Adjacent quantum tech:** the same large dipole moments drive Rydberg quantum computing (neutral-atom arrays, blockade gates) and hybrid quantum systems (atom–microwave–photon transduction). The Science Bulletin 2024 review explicitly bridges electrometry to hybrid quantum systems.
+
+---
+
+## 7. Limitations and Open Problems
+
+1. **Sensitivity–bandwidth trade-off.** EIT coherence dynamics tie transduction gain to response time; every bandwidth extension so far pays in sensitivity or complexity.
+2. **Comb-like native response.** Continuous tuning (Zeeman, Stark, dressing) works but adds hardware and calibration burden.
+3. **Dynamic range and strong-signal behavior.** Atoms saturate; linear dynamic range characterization is recent and ongoing. Co-site interference behavior in real EW environments is largely unpublished.
+4. **Low-frequency screening.** Adsorbed-alkali and free-charge screening inside cells; sapphire/resistivity engineering helps but complicates manufacture.
+5. **Laser system SWaP and stability.** Two (or three) frequency-stabilized lasers, one typically at an awkward blue/UV wavelength, remain the deployment bottleneck. Chip-scale photonic integration is the declared path (and the explicit DARPA thesis) but lab-grade performance hasn't been matched on-chip yet.
+6. **Environmental perturbations.** Stray DC fields, cell-wall effects, temperature, and vapor-density drift all shift lines; Zeeman-referenced locking and dual-cell schemes are active mitigations.
+7. **Traceability vs. sensitivity tension.** The most sensitive modes (superhet, amplitude regime) are the least directly self-calibrated; metrology-grade and receiver-grade operation are different operating points of the same physics.
+
+---
+
+## 8. Key Groups and Ecosystem Map
+
+- **NIST Boulder** — metrology canon; Holloway/Simons et al.; traceable fields, voltage, receivers.
+- **Army Research Lab** — Meyer, Cox, Kunz; wideband assessment, communications.
+- **Shaffer lineage (Oklahoma → QVIL)** — foundational vapor-cell work, homodyne, frequency-comb readout.
+- **Adams group, Durham** — EIT detection origin, THz imaging with Rydberg vapors.
+- **Pfau/Kübler, Stuttgart** — micro-cells, cell technology.
+- **Raithel/Anderson, Michigan + Rydberg Technologies** — commercial instrumentation.
+- **Shanxi University (Jia, Jing, Zhang)** — superheterodyne invention; PRC effort is broad and fast-moving (Zeeman continuous coverage, sapphire cells, SQL work largely PRC-affiliated).
+- **Princeton (Romalis)** — pulsed/Ramsey techniques, coherence physics.
+- **IIT Delhi / DRDO (India)** — quantum radar modeling, national prototype program.
+
+---
+
+## 9. Study Path (Recommended Reading Order)
+
+1. **Nature Reviews Physics 2024** — "Rydberg states of alkali atoms in atomic vapour as SI-traceable field probes and communications receivers." The map of the territory.
+2. **Sedlacek 2012 (Nat. Phys.)** + **Mohapatra 2007 (PRL)** — the two founding experimental papers; short and readable.
+3. **Fan 2015 (J. Phys. B tutorial)** — radio-to-THz scope and the working equations.
+4. **Jing 2020 (Nat. Phys.)** — superheterodyne; the architecture everything now builds on.
+5. **Science Bulletin 2024 review (10.1016/j.scib.2024.03.032)** — technique-by-technique metrics comparison (modulation schemes, homodyne, superhet, multi-wave mixing).
+6. **Photonics/MDPI Dec 2025 review (12, 1228)** — most current principles-and-applications survey.
+7. **arXiv:2607.05931 (2026)** — Rydberg Atomic Quantum Radio survey — the wireless/receiver-engineering perspective, closest to GreyNOC's RF/EW interests.
+8. **Meyer 2020 (J. Phys. B 53, 034001)** — the skeptical wideband assessment; calibrates hype.
+9. Frontier singles as needed: SQL paper (Sci. Adv.), Zeeman 1–40 GHz (Comms. Phys. 2026), multi-dress bandwidth (arXiv:2506.10541), sapphire kHz cells (npj QM 2026), Princeton time-separated fields (arXiv:2406.05106).
+
+**Tooling for hands-on theory:** the open-source **ARC (Alkali Rydberg Calculator)** Python package computes dipole moments, polarizabilities, Stark maps, and transition frequencies — the standard for designing sensing schemes on paper before touching hardware.
+
+---
+
+## 10. GreyNOC Relevance Notes
+
+- **Spectrum awareness / SIGINT-adjacent research:** the atomic-receiver literature is effectively a new class of wideband, hard-to-detect RF front end. Understanding its real limits (dynamic range, IBW, LO leakage) matters for both exploiting and defending against the technology as it fields.
+- **EW threat modeling:** an all-dielectric sensor with no metallic aperture defeats radar-cross-section-based and coupling-based detection of receivers; DARPA/DRDO investment signals near-term operational relevance.
+- **Wireless security research crossover:** superhet atomic receivers demodulate standard waveforms (AM/FM/PSK/QAM); the war-driving/wireless-recon knowledge base maps conceptually onto atomic receiver capability assessment.
+- **Metrology discipline:** SI-traceable, self-calibrated measurement philosophy aligns with the GreyNOC no-fabrication/reproducibility doctrine — atomic standards are the hardware embodiment of reproducible findings.
+
+---
+
+## Appendix A — Core Equations Cheat Sheet
+
+- Rydberg energy levels: E_n = −hcR/(n−δ_ℓ)², with quantum defect δ_ℓ for alkalis; R = 10 973 731.568 160(21) m⁻¹.
+- AT splitting → field: E = (h/d)·Δf_AT. Dipole moment d computed from atomic theory (ARC).
+- Quadratic Stark shift: ΔE = −½αE², α ∝ n⁷.
+- Superhet transduction: P_probe(t) ∝ cos[(ω_sig − ω_LO)t + Δφ] near the LO-set operating point; sensitivity set by slope of AT response at LO Rabi frequency.
+- Photon-shot-noise-limited minimum field (amplitude regime): E_min ≈ (h/d)·(Γ_EIT/SNR·√T) — narrower EIT lines and higher readout SNR win.
+
+## Appendix B — Glossary
+
+**AT splitting** — Autler–Townes; RF-induced doublet in the EIT line. **CBOM-adjacent note:** none; this is physics, not crypto. **EIT** — electromagnetically induced transparency. **IBW** — instantaneous bandwidth. **LO** — local oscillator. **NEF** — noise-equivalent field. **Quantum defect** — correction to hydrogenic level formula for alkali core penetration. **SQL** — standard quantum limit (atom projection noise). **Superhet** — atomic superheterodyne receiver. **Vapor cell** — sealed glass/sapphire cell of alkali vapor at or near room temperature.
+
+---
+
+*Compiled from open literature including Nature Physics, Nature Reviews Physics, Science Advances, Communications Physics, npj Quantum Materials, NIST publications, IEEE, AIP JAP, MDPI Photonics, Science Bulletin, and arXiv preprints through July 2026.*
