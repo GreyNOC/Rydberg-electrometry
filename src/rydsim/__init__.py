@@ -11,4 +11,4 @@ House rule: reproducible or it didn't happen. Every constant carries a
 source; every finding carries its uncertainty budget and model caveats.
 """
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"

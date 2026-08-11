@@ -37,7 +37,10 @@ from .provenance import Finding
 from .superhet import min_detectable_field, optimize_lo
 
 BANNER = f"GreyNOC RydSim v{__version__} — Rydberg electrometry simulator"
-FINDINGS_DIR = pathlib.Path(__file__).resolve().parents[2] / "findings"
+# Resolved at call time, not import time: in a frozen build the location
+# depends on where the .exe lives and whether that path is writable
+# (rydsim.paths). Import-time binding is what put findings in %TEMP%.
+from .paths import findings_dir
 
 
 # ---------------------------------------------------------------------------
@@ -50,6 +53,19 @@ def _load_config(args) -> LadderConfig:
         data = json.loads(pathlib.Path(args.config).read_text(encoding="utf-8"))
         known = {f.name for f in dataclasses.fields(LadderConfig)}
         cfg = LadderConfig(**{k: v for k, v in data.items() if k in known})
+        # TRUST BOUNDARY. `sources` is rendered into the "Constants on the
+        # critical path" block of a GreyNOC-branded finding. A config file
+        # received from a third party could therefore inject lines like
+        # "NIST SP 1234 primary standard, VERIFIED against traceable
+        # source" and have them appear as OUR provenance. Tag every
+        # config-supplied entry so a reader cannot mistake it for a claim
+        # RydSim stands behind. (Found by the pre-release security audit,
+        # which generated exactly that finding.)
+        if cfg.sources:
+            cfg = dataclasses.replace(cfg, sources=[
+                f"[UNVERIFIED — supplied by config file "
+                f"{pathlib.Path(args.config).name}, not checked by RydSim] {s}"
+                for s in cfg.sources])
     # numeric overrides given in lab units (MHz, K, nm, ea0) for humans
     mhz = 2 * np.pi * 1e6
     over = {
@@ -84,8 +100,9 @@ def _maybe_save_config(args, cfg: LadderConfig) -> None:
 
 
 def _write_finding(f: Finding, stem: str) -> None:
-    FINDINGS_DIR.mkdir(exist_ok=True)
-    base = FINDINGS_DIR / f"{stem}-{f.config_hash}"
+    out_dir = findings_dir()
+    out_dir.mkdir(parents=True, exist_ok=True)
+    base = out_dir / f"{stem}-{f.config_hash}"
     base.with_suffix(".json").write_text(f.to_json(), encoding="utf-8")
     base.with_suffix(".md").write_text(f.to_markdown(), encoding="utf-8")
     print(f"[finding] {base.with_suffix('.md')}")
@@ -236,9 +253,29 @@ def cmd_superhet(args) -> int:
 
 def cmd_validate(args) -> int:
     print(BANNER)
+    if getattr(sys, "frozen", False):
+        # The portable binary bundles the ENGINE, not the validation suite:
+        # tests/ and pytest are deliberately excluded (shipping a test
+        # runner inside a distributed artifact widens its attack surface
+        # for no user benefit). Refuse clearly rather than emitting a
+        # misleading failure — a validation command that cannot validate
+        # must say so, not return a red herring.
+        print("error: 'validate' is unavailable in the portable build.\n"
+              "  The validation suite is not bundled. Run it from a source\n"
+              "  checkout instead:\n"
+              "      pip install -e .[dev] && python -m pytest tests -q\n"
+              f"  This binary reports itself as rydsim {__version__}; the\n"
+              "  suite result for that version is recorded in the release\n"
+              "  notes and in docs/AUDIT-2026-08-10.md.", file=sys.stderr)
+        return 2
     root = pathlib.Path(__file__).resolve().parents[2]
-    cmd = [sys.executable, "-m", "pytest", str(root / "tests"), "-v"
-           if args.verbose else "-q", "--tb=short"]
+    tests = root / "tests"
+    if not tests.is_dir():
+        print(f"error: no tests directory at {tests} — run from a source "
+              "checkout.", file=sys.stderr)
+        return 2
+    cmd = [sys.executable, "-m", "pytest", str(tests),
+           "-v" if args.verbose else "-q", "--tb=short"]
     r = subprocess.run(cmd, cwd=root)
     return r.returncode
 
@@ -254,7 +291,9 @@ def cmd_info(args) -> int:
     print(f"  R_inf     = {c.RYD_INF:.6f} 1/m")
     print(f"  e*a0      = {c.AU_DIPOLE:.12e} C m")
     print(f"  E_h/(e a0)= {c.AU_EFIELD:.6e} V/m")
-    print(f"\nFindings dir: {FINDINGS_DIR}")
+    from .paths import is_frozen
+    print(f"\nFindings dir: {findings_dir()}"
+          + ("  (portable build: beside the executable)" if is_frozen() else ""))
     return 0
 
 
@@ -312,8 +351,53 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
+def _console_was_created_for_us() -> bool:
+    """True when this process owns its console, i.e. it was double-clicked.
+
+    Windows gives a GUI-launched console app a fresh console with only that
+    process attached; a program started from an existing terminal shares
+    that terminal with its parent shell. GetConsoleProcessList returning 1
+    is therefore the standard double-click test. Any failure answers False
+    (assume a real terminal) — the fallback must never hijack a scripted run.
+    """
+    if not sys.platform.startswith("win"):
+        return False
+    try:
+        import ctypes
+
+        buf = (ctypes.c_uint * 4)()
+        n = ctypes.windll.kernel32.GetConsoleProcessList(buf, 4)
+        return n == 1
+    except Exception:
+        return False
+
+
 def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    effective = sys.argv[1:] if argv is None else argv
+
+    if not effective:
+        # A portable .exe gets double-clicked — that is the whole point of
+        # shipping one. Bare argparse answers "error: the following
+        # arguments are required: command", exits 2, and Windows tears the
+        # console down instantly, so the binary appears to "error out
+        # immediately" with nothing readable. Give the double-click the GUI
+        # (what a user reaching for a desktop app wants), and give a real
+        # terminal the help text rather than an error.
+        if _console_was_created_for_us():
+            try:
+                return cmd_gui(None)
+            except Exception as exc:                     # pragma: no cover
+                print(f"{BANNER}\n\nCould not start the GUI: {exc}\n",
+                      file=sys.stderr)
+                parser.print_help()
+                input("\nPress Enter to close...")       # keep the window up
+                return 1
+        print(BANNER)
+        parser.print_help()
+        return 0
+
+    args = parser.parse_args(effective)
     return args.func(args)
 
 
