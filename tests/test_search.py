@@ -76,15 +76,53 @@ def test_campaign_frontier_and_table():
     assert "NEF [nV/cm/rtHz]" in table and "IBW [MHz]" in table
 
 
-def test_sensitivity_bandwidth_tradeoff_is_visible():
-    """The T2/DESIGNER premise: sweeping coupling Rabi trades NEF against
-    IBW, so the frontier has more than one point (if it collapses to one,
-    the objective is not resolving the trade)."""
-    designs = grid_designs(BASE, coupling_rabi_hz=list(np.geomspace(1e6, 15e6, 8)))
-    res = run_campaign(designs, lo_points=24)
-    assert res.n_feasible >= 6
-    nefs = np.array([e.nef for e in res.feasible])
-    ibws = np.array([e.ibw_hz for e in res.feasible])
-    # a genuine trade-off: the best-NEF point is not also the best-IBW point
-    assert np.argmin(nefs) != np.argmax(ibws)
+def test_nef_is_u_shaped_in_coupling_rabi_and_the_trade_is_weak():
+    """The T2/DESIGNER premise, stated as the physics actually observed.
+
+    The original form of this test swept Omega_c over 1-15 MHz and asserted
+    only `argmin(NEF) != argmax(IBW)` — a weak proxy for "a trade exists".
+    It passed for the wrong reason: the probe-absorption chain used the
+    closed-cycling dipole and omitted the ground hyperfine fraction, making
+    the medium 2.40x too absorbing (audit MED-22 / spec 10 R10-10) and
+    pushing the NEF optimum DOWN into the swept range. Correcting the
+    absorption moved the optimum to ~13 MHz, i.e. to the top edge of the old
+    sweep, so both optima landed on the same design and the proxy failed —
+    correctly, because the sweep no longer bracketed the optimum.
+
+    What is actually true, and what this now asserts:
+      1. NEF is U-SHAPED in Omega_c — an interior optimum exists. Below it,
+         NEF and IBW improve TOGETHER (there is no trade at all); above it
+         they oppose.
+      2. On the trade branch the coupling is WEAK: NEF ~ IBW^alpha with
+         alpha well below the folklore value of 1 that a constant
+         NEF x IBW product would require.
+    Both are physics claims, not proxies, and either failing is informative.
+    """
+    designs = grid_designs(BASE,
+                           coupling_rabi_hz=list(np.geomspace(1e6, 120e6, 16)))
+    res = run_campaign(designs, lo_points=20)
+    assert res.n_feasible >= 10
+
+    order = np.argsort([e.design.coupling_rabi_hz for e in res.feasible])
+    ev = [res.feasible[i] for i in order]
+    nefs = np.array([e.nef for e in ev])
+    ibws = np.array([e.ibw_hz for e in ev])
+
+    # 1. interior optimum (U-shape), not a boundary minimum
+    i = int(np.argmin(nefs))
+    assert 0 < i < len(nefs) - 1, (
+        f"NEF minimum at index {i} of {len(nefs)} — the sweep does not "
+        "bracket the optimum, so no statement about the trade is supported")
+
+    # below the optimum the two objectives do NOT oppose
+    assert nefs[0] > nefs[i] and ibws[i] > ibws[0]
+
+    # 2. above the optimum they do oppose, but weakly
+    br = slice(i, None)
+    assert np.all(np.diff(ibws[br]) > 0), "IBW must grow with Omega_c"
+    alpha = np.polyfit(np.log10(ibws[br]), np.log10(nefs[br]), 1)[0]
+    assert 0.0 < alpha < 0.5, (
+        f"trade exponent {alpha:.3f} outside the measured weak-trade regime; "
+        "alpha ~ 1 would mean the folklore constant-product law holds")
+
     assert len(res.frontier()) >= 2

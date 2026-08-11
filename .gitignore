@@ -8,9 +8,19 @@ dist/
 venv/
 *.png
 !docs/**/*.png
+# Generated per-run reports: noisy, reproducible from their config hash, and
+# not worth versioning.
 findings/*.json
 findings/*.md
 !findings/README.md
+# CURATED RESEARCH FINDINGS ARE VERSIONED. These are cited by docs, specs and
+# commit messages, and one of them is a RETRACTION. A project whose house rule
+# is "reproducible or it didn't happen" cannot keep its own evidence — least of
+# all a retraction — outside the repository. (Caught when a commit message
+# referenced a findings/ path that was not tracked.)
+!findings/d3-trade-law*
+!findings/literature-*
+!findings/reanalysis-*
 data/cache/
 
 # Third-party paper text kept locally for spec work — not ours to redistribute.

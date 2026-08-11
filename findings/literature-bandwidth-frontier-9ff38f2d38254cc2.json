@@ -1,0 +1,41 @@
+{
+  "title": "The Rydberg sensitivity-bandwidth trade-off has never been measured; the published 'frontier' is a hull-construction artifact",
+  "result": {
+    "central negative result": "There is no empirical sensitivity-bandwidth frontier in the published record. The four papers defining the SENSITIVITY axis (Sedlacek 2012, Jing 2020, Sci. Adv. 2024, Commun. Phys. 2026) state NO instantaneous bandwidth at all; every paper stating an IBW comes from the bandwidth-engineering literature. The trade-off is constructed by placing one lab's sensitivity beside another lab's bandwidth.",
+    "correlation on the 8 papers that state both": "alpha = -0.14 +/- 0.53, R^2 = 0.012 (OLS, log-log). Zero correlation; even the SIGN is undetermined. Defensible convention/inclusion choices move alpha over -0.28..+0.74, with R^2 never above 0.38.",
+    "the folklore alpha ~ 1 is a statistical artifact": "The clean Pareto hull (alpha = 0.67 +/- 0.11, R^2 = 0.95) is produced by hull construction, not by physics. A Monte-Carlo null with NO trade, matched to the observed marginals, yields hulls with median alpha = 1.27 and median R^2 = 0.85; P(hull alpha >= 0.669) = 0.80. A constant NEF x IBW product is precisely what uncorrelated points look like once a hull is drawn around them. The actual published product spans 81x.",
+    "comparability exceeds the signal": "At matched bandwidth (~9-21 MHz) published NEF spans 31x (62 nV/cm/rtHz ECNU vs 1910 nV/cm/rtHz NIST) \u2014 larger than the entire dynamic range of the claimed frontier.",
+    "the definitions do not agree": "Three mutually incompatible IBW definitions are in use, spanning 3.46x. NIST's is internally inconsistent: it equates a factor of 2 in FIELD with a 3 dB drop, but a factor of 2 in field is 6 dB.",
+    "two primary sources falsify the folklore directly": "Manchaiah et al. (NIST, arXiv:2509.20632): 'we demonstrate that sensitivity is preserved while achieving a response bandwidth of 8 MHz', with the preceding sentence naming the belief as folklore. And arXiv:2607.25309 improves on the same group's prior result on BOTH axes (147 nV/cm/rtHz at >100 MHz vs 222.6 at 76.8 MHz).",
+    "relation to this program's simulation": "RydSim's corrected engine predicts a WEAK trade above an interior optimum (alpha ~ 0.18, 3.55x bandwidth for 1.26x sensitivity). The literature does not contradict this \u2014 it contains no measurement capable of contradicting it.",
+    "the decisive experiment already has data": "Manchaiah et al. Fig. 4 reports NEF vs beat frequency at five coupling powers (20/60/100/140/160 mW) on ONE apparatus, but extracts no IBW per curve and fits no exponent. Re-analysing that single published figure would produce the field's first real trade exponent."
+  },
+  "config": {
+    "method": "24-agent web-verified literature audit; every load-bearing claim passed to an independent skeptic instructed to refute it",
+    "areas": "empirical frontier, fundamental bounds, mechanism, claim audit",
+    "corpus": "8 papers stating both axes; 14 data points extracted"
+  },
+  "uncertainty_budget": {
+    "no published error bars": "Not one of the eight (NEF, IBW) pairs carries a stated uncertainty on either coordinate. All fits assume equal weights and no errors-in-variables; quoted alpha uncertainties are LOWER BOUNDS.",
+    "convention unrecoverable": "Amplitude vs RMS is stated by nobody in the set. Pinned for Sci. Adv. 2024 only, via spec 08's antenna cross-check (T_eq 828 K computed vs 830 K published).",
+    "figure digitisation": "Several points are INFERRED from figures rather than stated; each is tagged as such in the underlying report."
+  },
+  "constants_used": [
+    "arXiv:2509.20632 (Manchaiah et al., NIST) [VERIFIED - fetched]",
+    "arXiv:2607.25309 [VERIFIED - fetched]",
+    "arXiv:2506.10541 v6 [VERIFIED - fetched, supersedes the v1 this program cited]",
+    "Sedlacek 2012 Nat. Phys. 8, 819; Jing 2020 Nat. Phys. 16, 911; Sci. Adv. 10, eads0683 (2024); Commun. Phys. 9, 102 (2026)"
+  ],
+  "cross_checks": [],
+  "caveats": [
+    "This is a NEGATIVE result about the literature, not a positive measurement of the trade. It establishes that the folklore is unsupported, NOT that no trade exists.",
+    "Band-averaged sensitivity is reported by nobody: every published pair is (best-case NEF at the optimal beat frequency, full-span IBW). In-band variation reaches 5.44x in one case, so published pairs systematically understate the trade by an unknown factor of order 1-5.",
+    "No IBW exists for ANY high-sensitivity result. For Sci. Adv. 2024 the within-shot atomic response bandwidth is unmeasured; if it is MHz-class (plausible for cold atoms: no Doppler, no transit) that paper becomes a high-sensitivity HIGH-bandwidth point and the narrative inverts.",
+    "Whether the engineering knobs (transit time, beam radius, Omega_c, Omega_p, Doppler geometry, dephasing) can be varied INDEPENDENTLY at fixed atom number and optical depth is unestablished. A constraint collapsing them onto one manifold is the only candidate for a fundamental trade, and nobody has published it. That is exactly what RydSim is positioned to test."
+  ],
+  "validation_state": "literature audit; every load-bearing claim adversarially refuted by an independent agent before inclusion",
+  "created_utc": "2026-08-11T21:07:09+00:00",
+  "rydsim_version": "0.2.0",
+  "config_hash": "9ff38f2d38254cc2",
+  "environment": "python 3.11.9 / Windows 10"
+}

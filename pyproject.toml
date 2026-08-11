@@ -15,8 +15,18 @@ dependencies = [
     # is NumPy 2.0+. The old >=1.26 floor was factually wrong: a resolver
     # landing on 1.26 raises AttributeError inside the core physics.
     "numpy>=2.0",
-    "scipy>=1.11",
-    "matplotlib>=3.8",
+    # These floors must be MUTUALLY SATISFIABLE with numpy>=2.0, not merely
+    # individually old enough. scipy 1.11 caps numpy below 1.28 and
+    # matplotlib 3.8 likewise predates numpy 2, so the previous set
+    # (numpy>=2.0, scipy>=1.11, matplotlib>=3.8) was unsatisfiable: pip
+    # rejects it with ResolutionImpossible. A user resolving to our declared
+    # minimums could not install the package at all. scipy 1.13 and
+    # matplotlib 3.9 are the first releases of each that accept numpy 2.
+    # Verified by resolution, not by reading changelogs — see the
+    # declared-dependencies CI job, which installs exactly these floors and
+    # then runs real physics through them.
+    "scipy>=1.13",
+    "matplotlib>=3.9",
 ]
 
 [project.optional-dependencies]
