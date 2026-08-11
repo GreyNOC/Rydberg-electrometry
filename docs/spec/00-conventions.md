@@ -9,6 +9,19 @@ Every ruling that changes a number was re-verified numerically during this revie
 Precedence order: **00 > the owning spec (per the ownership map, §4) > any other spec's
 convenience copy.** A spec's restatement of another spec's quantity is never authoritative.
 
+**Amendment log — 2026-08-10, post-audit remediation pass.** Source: the adversarial audit
+`docs/AUDIT-2026-08-10.md`, 34 confirmed findings, remediated. Suite re-run at the time of
+this amendment: 606 collected, **604 passed, 1 xfailed** (spec 07 RS-07-15 ponderomotive as
+printed), 1 skipped (headless GUI smoke), 0 failures.
+Rulings are amended **in place** with a dated note that keeps the superseded text visible:
+**R-17** scope qualified (quadratic Zeeman out of scope as *modelled physics*; the
+diamagnetic term is computed as a validity fence only) — narrows the claim, strengthens the
+check; **R-22** extended from Jing to the *class* of printed amplitude-vs-RMS artifacts, now
+covering Sedlacek's C5e dipole as a documented tension; **R-27** and **R-28** added (species →
+element single source of truth; `LadderConfig`'s species-dependent defaults). §4, §6 gap 1,
+§7 (dependency graph: new `rydsim.wigner` node, acyclicity re-verified) and §8 updated to
+match. No benchmark tolerance was relaxed in this pass.
+
 ---
 
 ## 1. Global convention locks (the non-negotiables)
@@ -26,7 +39,10 @@ convenience copy.** A spec's restatement of another spec's quantity is never aut
    **ℰ is the peak amplitude, never RMS.** Intensity `I = ε₀c ℰ²/2`; plane-wave flux
    `S = ℰ²/(2η₀)`. All sensitivity figures (NEF, E_min) are **amplitude** spectral densities.
    Any literature value suspected of an RMS convention (e.g. the √2 in Jing's printed
-   transduction formula) is converted before use — see ruling R-22.
+   transduction formula) is converted before use, or — where the paper's own stated
+   convention still does not reproduce it — recorded as a flagged fixture rather than
+   absorbed (Sedlacek's printed ℘). Ruling R-22 is the register of these amplitude-vs-RMS
+   artifacts.
 4. **Rabi frequency.** `Ω = d·ℰ/ħ` [rad/s], with d the transition dipole moment [C·m] of the
    specific driven pair and ℰ the peak amplitude. Ω is the **full** Rabi frequency: the RWA
    Hamiltonian carries `−ħΩ/2` on off-diagonals; the on-resonance AT peak separation equals
@@ -202,7 +218,7 @@ normative. Units are the internal (SI) units; display units in parentheses.
 |---|---|
 | Quantum defects, energies, n*, E_I, D-line + hyperfine data, λ_c values | **01** `rydsim.atom` |
 | Radial wavefunctions, radial matrix elements ⟨r^k⟩ | **02** `rydsim.radial` |
-| 3j/6j, phases, reduced/effective dipoles, oscillator strengths, Einstein A formula | **03** `rydsim.angular` |
+| 3j/6j, phases, reduced/effective dipoles, oscillator strengths, Einstein A formula | **03** `rydsim.angular` (3j/6j/CG kernel: `rydsim.wigner`, §7 step 2) |
 | Lifetimes, BBR, dephasing budget, collision/self-broadening coefficients | **04** `rydsim.lifetimes` |
 | Vapor pressure/density, Doppler machinery + velocity grids, transit, propagation, beam geometry, **screening parameters** | **05** `rydsim.vapor` |
 | OBE/Lindblad solver, EIT/AT lineshapes, χ, AT extraction, field inversion | **06** `rydsim.obe` (NOT "doc 04" as written in spec 05) |
@@ -344,7 +360,47 @@ g_J m_J)); spec 07 explicitly excludes Zeeman ("future spec") and spec 05 §7.7 
 misnumbered doc. **Ruling:** create `rydsim.zeeman` (linear Zeeman of fine-structure
 Rydberg states, Landé g_J = 3/2 + [s(s+1) − l(l+1)]/(2j(j+1)), stretched-state tuning law
 above) as a prerequisite for C9/E7; μ_B/h = 1.399625 MHz/G check value. Quadratic Zeeman
-and E×B remain out of scope.
+and E×B remain out of scope. *(That last sentence is superseded by the amendment below and
+is kept verbatim so the change is visible.)*
+
+**Amended 2026-08-10 (post-audit remediation; integrator ruling B — scope qualification).**
+The out-of-scope clause is replaced by:
+
+> Quadratic Zeeman (diamagnetic + second-order j-mixing), E×B, and hyperfine Zeeman (g_F)
+> are out of scope **as modelled physics** — `rydsim.zeeman` never returns them. The
+> diamagnetic term is nevertheless **computed, as a validity fence only**
+> (`rydsim.zeeman.diamagnetic_shift_hz` / `require_linear_dominates`), and is never
+> returned as a shift.
+
+*What changed and why.* This narrows what the module claims to model while strengthening
+the check on what it returns; it expands no scope. The original wording licensed reading
+the fine-structure-interval fence as the validity condition, and it is not the binding one
+for a Rydberg state:
+
+* **Two independent breakdown channels, both opt-in, both raising `IntegrityError`, both at
+  a 5 % tolerance** (`LINEAR_FENCE_FRACTION = DIAMAGNETIC_FENCE_FRACTION = 0.05`), armed by
+  the caller supplying the datum the module refuses to guess —
+  `state_shift_hz(..., fs_interval_hz=…, n_star=…)`.
+  **(1) j-mixing** (`require_linear_regime`): |Δf| ≤ 5 % of the caller-supplied
+  fine-structure interval.
+  **(2) The neglected diamagnetic term** (`require_linear_dominates`):
+  E_dia/h = e²B²⟨ρ²⟩/(8 m_e h) ≤ 5 % of the linear shift returned.
+* **Channel 1 alone is NOT sufficient for a Rydberg state.** The diamagnetic term grows as
+  n*⁴B² while the linear term is n-independent and the fine-structure interval shrinks as
+  n*⁻³, so channel 2 breaks first. Measured over the spec 09 E7 fixture's declared
+  B = 0–412 G range, neglected/returned is: Cs-like nD₅/₂ stretched, n* = 42.5 — **1.5 % at
+  60 G, crossing the 5 % tolerance at 202 G, 10.2 % at 412 G**; Cs-like nS₁/₂, n* = 44.9 —
+  **4.3 % at 60 G, 29.7 % at 412 G**. (All four figures regression-tested in
+  `tests/test_zeeman.py::test_neglected_over_returned_ratio_is_10_to_30_percent`; a 5 GHz
+  fine-structure interval trips channel 1 only above ~60 G.)
+* **Channel 1 is unarmable for l = 0** — an S₁/₂ state has no same-l j-partner, so there is
+  no interval to test — and l = 0 is exactly the case with the largest neglected fraction
+  above. Channel 2 arms for every l, including 0.
+* In `transition_shift_hz` both fences are per-state deliberately: the two levels differ in
+  l and n*, their diamagnetic shifts do not cancel in the difference, and a small
+  *differential* shift must not be able to launder a large neglected term.
+* Consequence for the corpus: E7's declared field range is outside the linear law's fence
+  (see §6 gap 1), which is a physics statement about E7, not a reason to relax the fence.
 
 **R-18. Steady-state acceptance tolerances.**
 Spec 06: |Tr−1| < 1e-12, Herm < 1e-10, eig > −1e-10; spec 09: |Tr−1| ≤ 1e-10, eig ≥ −1e-10.
@@ -371,12 +427,45 @@ Spec 04 quotes coefficients in Hz·cm³ and densities in cm⁻³; specs 05/06 ar
 at data-load time with the conversion recorded next to the source value. Mixed-unit
 arithmetic in physics code is a release blocker.
 
-**R-22. Literature Rabi/field conventions (Jing).**
+**R-22. Literature Rabi/field conventions — printed amplitude-vs-RMS artifacts (Jing;
+Sedlacek).** *(Title extended 2026-08-10; the ruling covers the class, not one paper.)*
 Spec 09 Eq. (2.5) records Jing's P_s = (√2·d_RF·α·P̄/(ħΓ))·E_s (a √2 that is their field/RMS
 convention artifact), and spec 08 flags Jing's Ω_L = 7.9 MHz vs E_LO = 3.0 mV/cm being
 mutually inconsistent (μE/ħ = 2π·5.54 MHz). **Ruling:** RydSim never imports literature Rabi
 frequencies or prefactors — Ω is always recomputed from (d, ℰ) under lock #3/#4. Benchmarks
 C6a/C6b test only the convention-free relations Ω_L* = Γ/√3 and S_max = 3√3χ₀/(8Γ).
+
+**Extended 2026-08-10 (post-audit remediation; integrator ruling C) — second instance of the
+same class: Sedlacek's printed effective RF dipole (spec 09 C5e).** Sedlacek 2012's printed
+℘ for Rb 53D₅/₂ → 54P₃/₂ (1.37e-26 C·m = 1615.88 e·a₀) is reproduced by **neither** member of
+the closed convention set `rydsim.dipoles.MU_RF_CONVENTIONS`, on the spec-02 consensus radial
+R = 3622.78 a₀ (three methods agreeing to 6e-6):
+
+| Convention | Computed ℘ | vs printed |
+|---|---|---|
+| `stretched` (the paper's own stated reading, "stretched hyperfine states") | 2291.2 e·a₀ = 1.9426e-26 C·m | **+41.8 %** |
+| `nist_pi` (lock #11, normative) | 1774.8 e·a₀ = 1.5047e-26 C·m | **+9.8 %** |
+
+The stretched residual is a clean √2: computed/printed = **1.41796**, i.e. √2 to **0.26 %**.
+Code-independent corroboration (no RydSim needed): Tu 2024 print 1218 e·a₀ for the **same**
+D₅/₂→P₃/₂ angular channel at 39D₅/₂→40P₃/₂ under an explicitly stretched σ⁺ ladder, so the two
+printed dipoles must scale as the radial matrix element alone; published Li-2003 / Mack-2011
+quantum defects give ν(53D)ν(54P)/ν(39D)ν(40P) = **1.8859**, while the printed ratio is
+1615.88/1218 = **1.3267** — short by 1.8859/1.3267 = **1.4215**, i.e. √2 to **0.5 %**.
+
+**Ruling (in force unchanged, extended in scope):** C5e is a **documented literature
+tension, not a passing benchmark**. Per audit R5 the **FIXTURE** is flagged, never the code
+bent to it: `MU_RF_CONVENTIONS` is a **closed set** of published conventions
+(`nist_pi`, `stretched`) and a convention is never added to make a benchmark agree — the
+invented `pi_manifold_rms` "convention" that had been used to force C5e into agreement is
+**removed from the code**. The printed **number stays VERIFIED** (v1 full text); its
+**convention is UNVERIFIED**. An m_j-mixed ensemble is not a third scalar convention (spec 03
+§2.3: sum over populated m_j with their individual AT splittings, never one doublet at an rms
+dipole). The verbatim provenance text ships as `rydsim.dipoles.C5E_CONVENTION_TENSION`, every
+digit of which is regenerated from a live run by
+`tests/test_dipoles.py::test_c5e_tension_note_digits_track_live_computation` so it cannot go
+stale; the cross-ratio above is re-derived without RydSim in
+`test_sedlacek_tu_ratio_shows_sqrt2_without_rydsim`.
 
 **R-23. Transit refill target state.**
 Spec 05: relax toward "thermal ground state" ρ_thermal; spec 06: measure-and-replace to
@@ -395,11 +484,56 @@ non-quantitative in Doppler media — hot-cell linewidths come only from the vel
 Spec 04 writes Δν_vdW ≈ |C₆|/(h·r_nn⁶) while quoting C₆ in GHz·µm⁶ (already an energy/h).
 **Ruling:** C₆ is stored as C₆/h [Hz·m⁶]; Δν_vdW = (C₆/h)/r⁶ with no additional /h.
 
+**R-27. Species → element mapping: one source of truth** *(new, 2026-08-10 post-audit
+remediation; the code-level instance of integrity-audit R10).*
+The species → element mapping was **forked across four modules** as
+`sp.name.startswith("Rb")`, each selecting element-keyed data: radial's MSD94
+model-potential parameters, lifetimes' Beterov τ₀/BBR fit tables, self-broadening
+coefficients and low-n/hard-floor tables, dipoles' provenance gating, objective's vapor-cell
+parameters. The form has **no refusal branch**: any species whose name does not start with
+"Rb" fell through to **Cs**, silently — a wrong number where the only correct answer is a
+stop. **Ruling:** `rydsim.atom.element_symbol(sp)` is the single species → element mapping.
+It returns the species' declared `element` field and raises `IntegrityError` for a species
+that declares none — refusing, never inferring one from the name. No module may slice an
+isotope name or hard-code a species test; element-keyed tables (`rydsim.cell`'s
+vapor-pressure coefficients and melting points above all) are keyed by the symbol this
+function returns. This is integrity-audit R10 ("duplicated constants are how
+normative values fork") in code form: the drift is harmless until it isn't, and the *pattern*
+is the hazard. Enforced by
+`tests/test_objective.py::test_species_element_mapping_has_one_source_of_truth`, which
+AST-parses every module in `src/rydsim` and fails on any surviving `sp.name.startswith(...)`
+species test (an AST walk, not a text grep — a docstring describing the old form is not an
+occurrence of it).
+
+**R-28. `LadderConfig`'s species-dependent defaults are a declared hazard** *(new,
+2026-08-10 post-audit remediation; audit CRITICAL-1).*
+`rydsim.experiment.LadderConfig` carries **six** species-dependent fields whose defaults
+describe **Rb-87 in natural rubidium with a nominal 480 nm coupling laser**: `gamma_e`,
+`mass`, `lambda_probe`, `lambda_coupling`, `element`, `isotope_fraction`. They exist so a
+hand-written config runs out of the box, **not as physics**. The design → simulation adapter
+let all six fall through, so **Cs-133 and Rb-85 designs were simulated inside a Rb-87 vapor
+cell** while the output was stamped VERIFIED — mixed-species arithmetic in physics code,
+which R-21 names a release blocker (audit CRITICAL-1: the Cs-133 fixture ran at
+element='Rb', isotope_fraction = 0.2783, mass = 86.909 u, λ_p = 780.241 nm, λ_c = 480 nm,
+Γ_e = 2π·6.07 MHz). **Ruling:** anything species-aware MUST build these six from
+`rydsim.atom` — `rydsim.objective.species_cell_parameters()` is that path and is what the
+design layer uses — and never inherit them; λ_c in particular is computed per state at
+runtime (R-15), never the nominal 480.0/509.4 nm. The residual hazard is **declared, not
+hidden**: `LadderConfig.species_defaults_in_use()` returns the subset of the six still at
+their Rb-87 values (empty exactly when all six are overridden), and reports/findings must
+surface a non-empty list rather than assume the caller knew. Enforced by
+`tests/test_objective.py::test_ladder_config_reports_unoverridden_species_defaults`.
+
 ---
 
 ## 6. Interface gaps (closed or explicitly assigned)
 
-1. **Zeeman module** — assigned (R-17). Blocks 09/C9, E7 until implemented.
+1. **Zeeman module** — assigned (R-17); **closed for C9**: `rydsim.zeeman` is implemented and
+   09/C9 (TIGHT, 1 % rel) lands against the μ_B/h check value. **E7.1–E7.2 remain open**, and
+   not merely for pipeline reasons: at E7's declared B = 0–412 G the neglected diamagnetic
+   term reaches 10.2–29.7 % of the linear shift (R-17 amendment), i.e. the fixture sits
+   outside the linear law's validity fence and needs beyond-linear-Zeeman physics, not just
+   this module.
 2. **Correlated-laser-noise parameter** in the OBE API — assigned (R-16).
 3. **Low-n intermediate levels** (Rb 5D/6P, Cs 7P) — spec 01 declares MISSING; take from
    NIST ASD as data if/when needed; never from the Ritz expansion below n_hard.
@@ -420,31 +554,62 @@ Spec 04 writes Δν_vdW ≈ |C₆|/(h·r_nn⁶) while quoting C₆ in GHz·µm�
 Build strictly in this order; each module's tests may use only earlier modules plus declared
 fixtures.
 
-1. **`rydsim.constants`** (this doc) — scipy CODATA passthrough, unit helpers, provenance.
-   Depends on: nothing.
-2. **`rydsim.angular`** (spec 03) — 3j/6j, Wigner–Eckart chain, S_FF', conversion helpers,
-   exact-rational test oracle. Depends on: constants only.
-3. **`rydsim.atom`** (spec 01) — species data, quantum defects (Form A/B), energies, E_I,
-   D-line/hyperfine data, transition frequencies, λ_c. Depends on: constants.
-4. **`rydsim.radial`** (spec 02) — Numerov + MSD94, Method B/C cross-checks, consensus
-   matrix elements. Depends on: atom (n*), constants.
-5. **`rydsim.dipoles`** (specs 02+03 integration layer) — full dipole matrix elements,
+1. **`rydsim.constants`** + **`rydsim.provenance`** (this doc) — scipy CODATA passthrough,
+   unit helpers, `SourcedValue`/`Confidence`, `IntegrityError`. Depends on: nothing (stdlib
+   and scipy only). *Leaf tier: neither imports any other `rydsim` module.*
+2. **`rydsim.wigner`** (spec 03 kernel) — certified 3j/6j and Clebsch–Gordan (float path with
+   an error estimate, exact-rational fallback, elementary-bound check). Depends on:
+   provenance (`IntegrityError`, raised rather than returning an out-of-bound symbol) —
+   **a leaf-level edge added in the 2026-08-10 remediation**. Ownership is unchanged: spec 03
+   / `rydsim.angular` still owns the angular algebra (§4); this is its kernel, split out
+   because two modules now consume it directly.
+3. **`rydsim.angular`** (spec 03) — Wigner–Eckart chain, S_FF', conversion helpers,
+   exact-rational test oracle. Depends on: constants, provenance, wigner.
+4. **`rydsim.atom`** (spec 01) — species data, quantum defects (Form A/B), energies, E_I,
+   D-line/hyperfine data, transition frequencies, λ_c, `element_symbol` (R-27).
+   Depends on: constants, provenance.
+5. **`rydsim.radial`** (spec 02) — Numerov + MSD94, Method B/C cross-checks, consensus
+   matrix elements. Depends on: atom (n*, `element_symbol`), constants.
+6. **`rydsim.dipoles`** (specs 02+03 integration layer) — full dipole matrix elements,
    effective RF dipole ℘, D-line closure checks. Depends on: angular, radial, atom.
-6. **`rydsim.lifetimes`** (spec 04) — Einstein-A sums, Beterov fits, BBR, dephasing budget,
+7. **`rydsim.lifetimes`** (spec 04) — Einstein-A sums, Beterov fits, BBR, dephasing budget,
    collision coefficients. Depends on: dipoles, atom, constants.
-7. **`rydsim.vapor`** (spec 05) — vapor pressure/density, Doppler machinery + velocity grids,
+8. **`rydsim.vapor`** (spec 05) — vapor pressure/density, Doppler machinery + velocity grids,
    transit rates, beam geometry, propagation, screening T(f). Depends on: atom (masses,
    D-line), angular (S_FF' for the Voigt reference), constants.
-8. **`rydsim.zeeman`** (new, R-17) — g_J and linear Zeeman tuning. Depends on: atom, angular.
-9. **`rydsim.obe`** (spec 06) — Hamiltonians, collapse sets, Liouvillian, steady state,
-   weak-probe χ, Doppler-averaged spectra, AT extraction, field inversion. Depends on:
-   dipoles, lifetimes, vapor.
-10. **`rydsim.stark`** (spec 07) — perturbative α, Stark maps, readout/bias formulas,
+9. **`rydsim.zeeman`** (new, R-17) — g_J, linear Zeeman tuning, and the R-17 diamagnetic
+   validity fence. Depends on: constants (`MU_B`, `H`; plus `A0`, `E_CHARGE`, `M_E` for the
+   diamagnetic prefactor e²a₀²/(8 m_e h) — added with the ruling-B fence), provenance
+   (`IntegrityError`), **wigner** (Clebsch–Gordan for the |l j m_j⟩ → |m_l m_s⟩ decomposition
+   behind ⟨sin²θ⟩ — lock #9: no re-implemented angular algebra). It consumes `rydsim.atom`
+   *data* (n*, fine-structure intervals) but does **not import** atom or angular: both fences
+   take those as caller-supplied arguments, which is why its import set is leaf-level. Build
+   position retained for numbering stability; dependency-wise it may be built any time after
+   step 2.
+10. **`rydsim.obe`** (spec 06) — Hamiltonians, collapse sets, Liouvillian, steady state,
+    weak-probe χ, Doppler-averaged spectra, AT extraction, field inversion. Depends on:
+    dipoles, lifetimes, vapor.
+11. **`rydsim.stark`** (spec 07) — perturbative α, Stark maps, readout/bias formulas,
     screening interface. Depends on: atom, radial, angular (and vapor for T(f) parameters).
-11. **`rydsim.superhet`** (spec 08) — transduction slope, H(δ)/IBW, noise budget, SQL,
+12. **`rydsim.superhet`** (spec 08) — transduction slope, H(δ)/IBW, noise budget, SQL,
     receiver metrics, demodulation. Depends on: obe, dipoles, lifetimes, vapor (and stark
     for the biased-quadratic LF readout mode).
-12. **`rydsim.validation`** (spec 09) — benchmark registry, grading, report. Depends on: all.
+13. **`rydsim.validation`** (spec 09) — benchmark registry, grading, report. Depends on: all.
+
+Shipped-tree note (measured 2026-08-10, same AST walk): steps 1–5 and 9 — `constants`,
+`provenance`, `wigner`, `angular`, `atom`, `radial`, `zeeman` — exist under these names and
+their `Depends on:` lines above are **measured import sets**. Steps 8 (`vapor`), 10 (`obe`)
+and 13 (`validation`) are not single files yet (that work is distributed across the shipped
+modules), so their lines state the spec's **intent**, not a measured set; two measured
+deviations worth knowing are that `lifetimes` reaches `radial`/`angular` directly rather than
+only through `dipoles`, and `stark` imports `wigner` directly. Reconciling the remaining rows
+with the shipped tree is a separate pass — the build/test layering above stays normative.
+
+Acyclicity (re-verified 2026-08-10 by AST-walking every module in `src/rydsim`, counting
+module-level **and** function-local deferred imports): the import graph is **acyclic**.
+`constants` and `provenance` import nothing from `rydsim`; `wigner` imports only
+`provenance`; `angular` and `zeeman` import {constants, provenance, wigner}. The new
+wigner → provenance edge therefore cannot close a loop — it points strictly down-tier.
 
 Circularity note: the spec 07 ↔ 08 NEF pipeline (07 Eq. 7.15 consumes 08's δν_min) is a
 *data-flow* loop at analysis time, not an import cycle — `stark` exposes responsivity,
@@ -464,7 +629,18 @@ reduces to both parents' forms (R-7); (iii) correlated-noise wiring (R-16); (iv)
 tuning-law check against μ_B/h (R-17); (v) α₀(Rb 50S) = 50.5 MHz/(V/cm)² replaces the 04
 budget figure (R-5).
 
+Added by the 2026-08-10 remediation pass (all shipped and passing): (vi) the R-17
+diamagnetic fence — the four neglected/returned ratios over the E7 field range, the fence
+raising `IntegrityError` where the fine-structure fence passes, and its armability at l = 0
+(`tests/test_zeeman.py`); (vii) the C5e tension note's digits regenerated from a live run,
+plus the RydSim-independent cross-ratio, plus the closed-set rejection of the withdrawn
+`pi_manifold_rms` convention (R-22, `tests/test_dipoles.py`); (viii) the AST-level lint that
+no `sp.name.startswith(...)` species test survives anywhere in `src/rydsim` (R-27) and the
+`species_defaults_in_use()` report on `LadderConfig` (R-28), both in
+`tests/test_objective.py`.
+
 ---
 
-*GreyNOC · RydSim spec 00 · consistency review 2026-08-10 · house rule: reproducible or it
-didn't happen.*
+*GreyNOC · RydSim spec 00 · consistency review 2026-08-10, amended 2026-08-10 (post-audit
+remediation: R-17, R-22, R-27, R-28, §4/§6/§7/§8) · house rule: reproducible or it didn't
+happen.*

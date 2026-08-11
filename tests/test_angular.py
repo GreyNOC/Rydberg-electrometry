@@ -708,6 +708,186 @@ def test_refuse_forbidden_rf_dipole():
         effective_rf_dipole(0, 0.5, 2, 2.5, 100.0)
 
 
+# ---------------------------------------------------------------------------
+# effective_rf_dipole polarization bookkeeping (audit 2026-08-10 MEDIUM:
+# "inverts the sign of q in the m_j bookkeeping")
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("l,j,lp,jp,mj,q,exact,label", [
+    # |A| for sigma drives out of m_j = 1/2, checked against the exact 3j x
+    # reduced element assembled independently below (test_sigma_..._oracle).
+    (2, 2.5, 1, 1.5, 0.5, +1, 0.2, "D5/2 m=1/2 -> P3/2 m=3/2 (sigma+)"),
+    (0, 0.5, 1, 1.5, 0.5, +1, 1 / math.sqrt(3), "S1/2 m=1/2 -> P3/2 m=3/2"),
+    (2, 2.5, 3, 3.5, 0.5, +1, math.sqrt(10) / 7, "D5/2 m=1/2 -> F7/2 m=3/2"),
+])
+def test_sigma_rf_transitions_are_allowed(l, j, lp, jp, mj, q, exact, label):
+    """Every sigma+/sigma- RF element used to be refused as 'E1-forbidden'.
+
+    They are E1-ALLOWED; a refusal that asserts a false statement about an
+    allowed transition is the exact silent-wrongness the refuse-to-guess
+    policy exists to prevent (spec 00 lock #11 requires assembling a coherent
+    multi-q sum, which is impossible if q != 0 raises).
+    """
+    p = effective_rf_dipole(l, j, lp, jp, 1.0, mj=mj, q=q)
+    assert p / (E_CHARGE * A0) == pytest.approx(exact, rel=1e-12), label
+
+
+def test_sigma_rf_dipole_against_wigner_eckart_oracle():
+    """Independent oracle for the sigma elements: assemble
+    |<l' j' m+q| e r_q |l j m>| from the exact-rational 3j and the reduced
+    element, with the m-bookkeeping written out explicitly (m_bra = m_ket + q).
+    """
+    for (l, j, lp, jp) in [(0, 0.5, 1, 1.5), (2, 2.5, 1, 1.5), (2, 2.5, 3, 3.5),
+                           (1, 1.5, 2, 2.5)]:
+        red = reduced_dipole_j(lp, jp, l, j)          # bra = target state
+        for q in (-1, 0, +1):
+            for tm in range(-_tw(j), _tw(j) + 1, 2):
+                mj = tm / 2
+                mjp = mj + q
+                if abs(mjp) > jp:
+                    continue
+                sign, sq = wigner_3j_exact(jp, 1, j, -mjp, q, mj)
+                expected = abs(_oracle_val(sign, sq) * red)
+                if expected == 0.0:
+                    with pytest.raises(IntegrityError):
+                        effective_rf_dipole(l, j, lp, jp, 1.0, mj=mj, q=q)
+                    continue
+                got = effective_rf_dipole(l, j, lp, jp, 1.0, mj=mj, q=q)
+                assert got / (E_CHARGE * A0) == pytest.approx(expected, rel=1e-12), (
+                    l, j, lp, jp, mj, q)
+
+
+def test_rf_dipole_polarization_symmetry():
+    """|<a|e r_q|b>| = |<b|e r_-q|a>|: the drive and its reverse have the same
+    effective dipole. This is the identity the old sign error violated (it
+    made one direction vanish identically)."""
+    for (l, j, lp, jp) in [(0, 0.5, 1, 1.5), (2, 2.5, 1, 1.5), (2, 2.5, 3, 3.5)]:
+        for q in (-1, 0, +1):
+            for tm in range(-_tw(j), _tw(j) + 1, 2):
+                mj, mjp = tm / 2, tm / 2 + q
+                if abs(mjp) > jp:
+                    continue
+                fwd = abs(angular_factor(lp, jp, mjp, l, j, mj, q))
+                rev = abs(angular_factor(l, j, mj, lp, jp, mjp, -q))
+                assert fwd == pytest.approx(rev, abs=1e-14), (l, j, lp, jp, mj, q)
+
+
+def test_effective_rf_dipole_matches_dipoles_stretched_convention():
+    """The codebase must not contradict itself on lock #11: driving the
+    stretched pair (m_j = j, q = j' - j) through rydsim.angular gives the same
+    |A| as rydsim.dipoles._rf_angular(..., 'stretched'), which implements the
+    same normative quantity. Cs 45D5/2 -> 46P3/2 gives |A| = sqrt(2/5)."""
+    from rydsim.dipoles import _rf_angular
+
+    for (l, j, lp, jp) in [(2, 2.5, 1, 1.5), (0, 0.5, 1, 1.5), (2, 2.5, 3, 3.5)]:
+        q = round(jp - j)
+        ours = effective_rf_dipole(l, j, lp, jp, 1.0, mj=j, q=q) / (E_CHARGE * A0)
+        theirs, _, _, _ = _rf_angular(l, j, lp, jp, "stretched")
+        assert ours == pytest.approx(theirs, rel=1e-14), (l, j, lp, jp)
+    d52_p32 = effective_rf_dipole(2, 2.5, 1, 1.5, 1.0, mj=2.5, q=-1)
+    assert d52_p32 / (E_CHARGE * A0) == pytest.approx(math.sqrt(0.4), rel=1e-12)
+
+
+def test_rf_dipole_pi_defaults_unchanged_by_the_fix():
+    """Regression guard: the lock #11 default (m_j = 1/2, q = 0) must still be
+    the NIST factors, i.e. the polarization fix touched only q != 0."""
+    for (l, j, lp, jp, exact) in [(0, 0.5, 1, 1.5, math.sqrt(2) / 3),
+                                  (2, 2.5, 1, 1.5, math.sqrt(6) / 5),
+                                  (2, 2.5, 3, 3.5, 2 * math.sqrt(3) / 7)]:
+        p = effective_rf_dipole(l, j, lp, jp, 1.0)
+        assert p / (E_CHARGE * A0) == pytest.approx(exact, rel=1e-12)
+
+
+# ---------------------------------------------------------------------------
+# Oscillator-strength direction (audit 2026-08-10 MEDIUM: emission recipe
+# used the lower-state degeneracy, overstating |f| by g_e/g_g)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("line", ["Rb87_D2", "Rb87_D1", "Cs_D2"])
+def test_oscillator_strength_emission_vs_einstein_A(line):
+    """f_(e->g) = -2 pi eps0 m_e c^3 A_(e->g) / (e^2 omega^2).
+
+    Independent identity between the two Einstein/oscillator relations, both
+    shipped by this module. D2 is the sensitive case (g_e/g_g = 2); D1 has
+    g_e = g_g so it cannot detect the defect and is included only to show the
+    identity is not accidentally direction-blind.
+    """
+    d = D_LINES[line]
+    omega = 2 * math.pi * d["nu_hz"]
+    jg, je = d["j_lower"], d["j_upper"]
+    d_racah = steck_to_racah(d["d_steck_ea0"], jg) * AU_DIPOLE
+    A = einstein_A(omega, d_racah, je)
+    f_emission = oscillator_strength(-omega, d_racah, je)  # initial = UPPER
+    expected = -2 * math.pi * EPS0 * M_E * C**3 * A / (E_CHARGE**2 * omega**2)
+    assert f_emission == pytest.approx(expected, rel=1e-12)
+    # and the g-ratio relation g_i f_(i->f) = -g_f f_(f->i)
+    f_absorption = oscillator_strength(omega, d_racah, jg)
+    assert (2 * jg + 1) * f_absorption == pytest.approx(
+        -(2 * je + 1) * f_emission, rel=1e-12)
+
+
+def test_oscillator_strength_rb87_d2_absolute_values():
+    """Rb-87 D2: f(5S1/2 -> 5P3/2) = +0.6958 (spec 03 SS2.7 quotes 0.696) and
+    f(5P3/2 -> 5S1/2) = -0.3479 = -(g_g/g_e) f_up, NOT -0.6958. The old
+    documented recipe (pass the lower-state j with negative omega) returns
+    exactly 2x the correct magnitude on this line."""
+    d = D_LINES["Rb87_D2"]
+    omega = 2 * math.pi * d["nu_hz"]
+    d_racah = steck_to_racah(d["d_steck_ea0"], 0.5) * AU_DIPOLE
+    f_up = oscillator_strength(omega, d_racah, 0.5)
+    f_down = oscillator_strength(-omega, d_racah, 1.5)
+    assert f_up == pytest.approx(0.695772, rel=1e-5)
+    assert f_up == pytest.approx(0.696, rel=1e-3)
+    assert f_down == pytest.approx(-0.347886, rel=1e-5)
+    old_recipe = oscillator_strength(-omega, d_racah, 0.5)
+    assert old_recipe / f_down == pytest.approx(2.0, rel=1e-12)
+
+
+def test_trk_sum_with_downward_channel_is_direction_correct():
+    """A TRK partial sum over a two-level pair must cancel exactly when the
+    downward channel is entered with the upper state's degeneracy: the
+    absorption term from g and the emission term from e satisfy
+    g_g f_(g->e) + g_e f_(e->g) = 0."""
+    d = D_LINES["Rb87_D2"]
+    omega = 2 * math.pi * d["nu_hz"]
+    d_racah = steck_to_racah(d["d_steck_ea0"], 0.5) * AU_DIPOLE
+    weighted = trk_sum(np.array([
+        2 * oscillator_strength(omega, d_racah, 0.5),    # g_g f_(g->e)
+        4 * oscillator_strength(-omega, d_racah, 1.5),   # g_e f_(e->g)
+    ]))
+    assert weighted == pytest.approx(0.0, abs=1e-12)
+
+
+# ---------------------------------------------------------------------------
+# Certification guard on the re-exported symbols (audit refusal #13)
+# ---------------------------------------------------------------------------
+
+def test_reexported_wigner_symbols_are_guarded():
+    """rydsim.angular.wigner_3j/6j are spec 03 SS5 public API and must carry
+    the module's declared j <= 150 ceiling — they used to be the raw kernels
+    with no guard, so a j = 300 request was answered silently."""
+    import rydsim.angular as ang
+
+    with pytest.raises(IntegrityError):
+        ang.wigner_3j(300, 300, 300, 0, 0, 0)
+    with pytest.raises(IntegrityError):
+        ang.wigner_3j(151.5, 1, 152.5, 0.5, 0, -0.5)
+    with pytest.raises(IntegrityError):
+        ang.wigner_6j(200, 200, 200, 200, 200, 200)
+    # inside the ceiling they answer, and they answer correctly
+    assert ang.wigner_3j(100, 90, 80, 0, 0, 0) == pytest.approx(
+        _oracle_val(*wigner_3j_exact(100, 90, 80, 0, 0, 0)), rel=1e-12)
+
+
+def test_exact_oracle_is_the_documented_route_past_the_ceiling():
+    """The refusal offers a route rather than a dead end: the exact-rational
+    oracle is exported from rydsim.angular and answers past j = 150."""
+    import rydsim.angular as ang
+
+    v = ang.exact_to_float(*ang.wigner_3j_exact(300, 300, 300, 0, 0, 0))
+    assert v == pytest.approx(2.017505855571e-03, rel=1e-10)
+
+
 def test_finestate_validation():
     """FineState rejects unphysical (n, l, j) combinations."""
     FineState(50, 2, 2.5)  # valid

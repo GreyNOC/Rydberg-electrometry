@@ -16,8 +16,8 @@ import numpy as np
 import pytest
 
 import rydsim.lifetimes as lt
-from rydsim.atom import CS133, RB87, coupling_wavelength_m
-from rydsim.cell import mean_transverse_speed, transit_rate
+from rydsim.atom import CS133, RB85, RB87, coupling_wavelength_m
+from rydsim.cell import mean_transverse_speed, number_density_m3, transit_rate
 from rydsim.constants import A0, AMU, C, E_CHARGE, EPS0, HBAR, KB
 from rydsim.eit import LadderChiParams, doppler_average
 from rydsim.lindblad import LadderSystem
@@ -257,9 +257,291 @@ class TestBBR:
 
     def test_bbr_tail_guard_raises_when_window_too_small(self):
         """SS4.2 truncation rule: an undersized upward window must raise,
-        never return a silently truncated rate."""
+        never return a silently truncated rate. dn_up = 3 leaves nothing
+        past the n' = n +- 1,2 transfer peak, so the tail is not even
+        estimable — the refusal must say so rather than quote a number."""
         with pytest.raises(IntegrityError, match="unconverged"):
             decay_table(RB87, 45, 0, 0.5, dn_up=3).bbr_rate(300.0)
+        tail = decay_table(RB87, 45, 0, 0.5, dn_up=3).bbr_tail(300.0)
+        assert not tail.estimable and not tail.converged
+        assert math.isinf(tail.tail_bound_rel)
+
+
+# ---------------------------------------------------------------------------
+# BBR truncation: the tail guard must estimate the OMITTED tail
+# (audit: "BBR tail guard is not a truncation estimate")
+# ---------------------------------------------------------------------------
+
+def _truncate(table, n_cut):
+    """A view of ``table`` with the upward window cut at n' <= n_cut."""
+    return replace(table,
+                   channels=tuple(c for c in table.channels if c.n <= n_cut),
+                   n_top=n_cut)
+
+
+class TestBBRTruncation:
+    def test_tail_estimate_predicts_the_measured_truncation(self):
+        """INDEPENDENT check of the extrapolation: build one wide table
+        (Rb 30S, n' <= 70) and compare the tail estimate made from a NARROW
+        view (n' <= 45) against the rate that the extra channels 46..70
+        actually add. The estimate must track the measured increment to
+        within a factor of 2, the p = 3 bound must exceed it, and the
+        completed rate Gamma(cut) * (1 + tail) must be stable across cuts —
+        that stability is what makes 'the omitted tail' a measured quantity
+        rather than a heuristic.
+
+        The replaced guard could not do this: it summed the weight of the
+        three highest-n' INCLUDED channels, which for Rb 50S reads 8.1e-4
+        at dn_up = 25 (true truncation 0.6 %) and 1.2e-3 at dn_up = 20
+        (true truncation 0.8 %) — i.e. it grew while the error shrank.
+        """
+        wide = decay_table(RB87, 30, 0, 0.5, dn_up=40)
+        narrow = _truncate(wide, 45)
+        t_n = narrow.bbr_tail(300.0)
+        t_w = wide.bbr_tail(300.0)
+        measured = (t_w.rate_s - t_n.rate_s) / t_n.rate_s
+        assert measured > 0.0
+        assert 0.5 * measured <= t_n.tail_estimate_rel <= 2.0 * measured
+        assert t_n.tail_bound_rel > measured
+        completed_n = t_n.rate_s * (1.0 + t_n.tail_estimate_rel)
+        completed_w = t_w.rate_s * (1.0 + t_w.tail_estimate_rel)
+        assert abs(completed_n / completed_w - 1.0) < 0.01
+        # monotone in the window size, as a truncation error must be
+        assert t_w.tail_estimate_rel < t_n.tail_estimate_rel
+        assert t_w.tail_bound_rel < t_n.tail_bound_rel
+
+    def test_bound_is_above_the_estimate_and_uses_the_asymptotic_slope(self):
+        """The p = 3 continuation is the slowest decay the discrete tail can
+        have (omega -> E_bind, nbar -> const, |R|^2 ~ n'^-3), so it must
+        bound the measured-slope estimate; the measured slopes themselves
+        must sit at or above 3."""
+        tail = decay_table(RB87, 50, 0, 0.5).bbr_tail(300.0)
+        assert tail.tail_bound_rel >= tail.tail_estimate_rel
+        assert tail.slopes and all(p >= 3.0 for _, p in tail.slopes)
+
+    @pytest.mark.parametrize("state", [(50, 1, 0.5), (30, 1, 1.5)])
+    def test_cs_np_series_converges_at_the_shipped_window(self, state):
+        """Coverage hole closed (audit): NO Cs nP sum was exercised, and the
+        old guard refused the whole series at the shipped dn_up = 25 —
+        including Cs 50P1/2, whose Gamma_BBR it declined to return agrees
+        with the INDEPENDENT Beterov Eq. 14 analytic fit to well inside the
+        S3 20 % band. Also covers the tau_eff round trip."""
+        n, l, j = state
+        table = decay_table(CS133, n, l, j)
+        tail = table.bbr_tail(300.0)
+        assert tail.converged, (tail.tail_estimate_rel, tail.tail_bound_rel)
+        fit = float(lt.bbr_rate_fit(CS133, n, l, j, 300.0))
+        assert abs(tail.rate_s / fit - 1.0) < 0.20
+        assert table.effective_lifetime(300.0) > 0.0
+
+    def test_guard_still_fires_when_the_truncation_is_real(self):
+        """The guard must remain a guard. On a view of the Rb 30S table cut
+        at n' = n + 10 the truncation measured against the n' = n + 40 table
+        is 1.0 %, so a 0.5 % tolerance MUST refuse (and the refusal is
+        deserved: measured > tol), while the shipped 5 % tolerance passes.
+        A window with fewer than five channels past the transfer peak is
+        refused outright — the tail is not estimable there at all."""
+        wide = decay_table(RB87, 30, 0, 0.5, dn_up=40)
+        short = _truncate(wide, 40)
+        measured = (wide.bbr_tail(300.0).rate_s
+                    / short.bbr_tail(300.0).rate_s - 1.0)
+        assert measured > 0.005          # the refusal below is deserved
+        with pytest.raises(IntegrityError, match="unconverged"):
+            short.bbr_rate(300.0, tail_tol=0.005)
+        assert short.bbr_rate(300.0) > 0.0
+        assert not _truncate(wide, 38).bbr_tail(300.0).estimable
+        with pytest.raises(IntegrityError, match="unconverged"):
+            _truncate(wide, 38).bbr_rate(300.0)
+
+
+# ---------------------------------------------------------------------------
+# Weighted A-vs-B consensus gate
+# (audit: "per-channel consensus veto makes routine states uncomputable")
+# ---------------------------------------------------------------------------
+
+def _chan(n, l, j, omega_hz, rate_A, spread, *, above=True, ceiling=1e-4):
+    """A DecayChannel with rate_B implied by the requested radial spread
+    (rate ~ R^2, so rate_B = rate_A (1 - spread)^2)."""
+    return lt.DecayChannel(
+        n=n, l=l, j=j, omega_hz=omega_hz, rate_A=rate_A,
+        rate_B=rate_A * (1.0 - spread) ** 2, radial_a0=1.0,
+        spread_rel=spread, above_floor=above, ab_ceiling=ceiling)
+
+
+class TestConsensusGate:
+    """The spec-02 ceiling must be enforced where the rate lives."""
+
+    def test_states_the_unweighted_veto_made_uncomputable(self):
+        """Reproduces the audit's failing set. Every one of these states was
+        refused by the per-channel veto over a channel carrying 1e-11..1e-8
+        of the total rate; each must now compute, and the INDEPENDENT
+        Beterov Table-II fit must land inside the shipped tau_0 interval.
+        Rb 30D5/2 and Rb 58D3/2 are mainstream electrometry states."""
+        for sp, n, l, j in ((RB87, 30, 2, 2.5), (RB87, 24, 1, 1.5),
+                            (CS133, 20, 2, 1.5)):
+            table = decay_table(sp, n, l, j)
+            fit = float(lt.radiative_lifetime_fit(sp, n, l, j))
+            lo, hi = table.tau0_interval()
+            assert lo <= fit <= hi, (sp.name, n, l, j, lo, fit, hi)
+            assert table.consensus_share_floor > 0.0
+
+    def test_exempted_channels_are_recorded_and_negligible(self):
+        """The exemption is provenance, not silence (audit SS4 item 5): the
+        skipped channels are listed with their share, and Rb 30D5/2's
+        vetoing channel — the one that used to block the whole lifetime —
+        is there carrying < 1e-9 of the rate."""
+        table = decay_table(RB87, 30, 2, 2.5)
+        assert table.consensus_exempt
+        by_state = {(n, l, j): (share, spread)
+                    for n, l, j, share, spread in table.consensus_exempt}
+        share, spread = by_state[(31, 3, 2.5)]
+        assert spread > 1e-3            # would have vetoed the whole table
+        assert share < 1e-9             # while carrying nothing
+        assert all(s < table.consensus_share_floor
+                   for _, _, _, s, _ in table.consensus_exempt)
+
+    def test_gate_fires_on_a_channel_that_carries_rate(self):
+        """A ceiling breach on a DOMINANT channel is still a hard refusal —
+        the weighting must not have disarmed the tripwire."""
+        good = [_chan(6, 1, 1.5, 4.0e14, 1.0e7, 1e-6),
+                _chan(7, 1, 1.5, 4.5e14, 1.0e5, 1e-6)]
+        lt._consensus_audit(RB87, 50, 0, 0.5, good)      # no raise
+        bad = [_chan(6, 1, 1.5, 4.0e14, 1.0e7, 1e-2),
+               _chan(7, 1, 1.5, 4.5e14, 1.0e5, 1e-6)]
+        with pytest.raises(IntegrityError, match="consensus failed"):
+            lt._consensus_audit(RB87, 50, 0, 0.5, bad)
+
+    def test_exemption_premise_is_itself_gated(self):
+        """Many individually-tiny breaches must not add up to a material
+        amount of rate: once the exempted set passes 1 % of the total the
+        engine refuses instead of shipping it."""
+        chans = [_chan(6, 1, 1.5, 4.0e14, 1.0e7, 1e-6)]
+        # 300 breaching channels at ~5e-5 share each -> ~1.5 % in total
+        chans += [_chan(10 + k, 1, 1.5, 4.0e14, 5.0e2, 0.5)
+                  for k in range(300)]
+        with pytest.raises(IntegrityError, match="exemption invalid"):
+            lt._consensus_audit(RB87, 50, 0, 0.5, chans)
+
+    def test_ceiling_is_the_shared_gate_not_a_transcription(self):
+        """R10 reconciliation: this module used to TRANSCRIBE the spec 02 §6
+        ceilings, and had already diverged from radial's copy (which applied
+        the 1e-4 row to every large low-l pair, where this one scoped it to
+        S<->P). Two gates disagreeing about the same physics is the
+        constant-forking hazard in code form.
+
+        The better-sourced rule — 1e-4 is S<->P-measured (B8/B11), so
+        applying it to P<->D / D<->F is an unsourced extrapolation — was
+        adopted into the shared gate. This test asserts the DELEGATION
+        (agreement with radial across every regime) rather than the constant
+        values, so the two can no longer drift apart. Asserting the numbers
+        here would only re-pin this module's copy of them.
+        """
+        from rydsim.radial import _ab_ceiling as shared
+
+        for nu_min, me_abs, l1, l2 in (
+                (50.0, 1000.0, 0, 1),    # S<->P, large  -> the measured row
+                (50.0, 1000.0, 2, 3),    # D<->F         -> unsourced for 1e-4
+                (50.0, 1000.0, 1, 2),    # P<->D         -> ditto
+                (50.0, 1.0, 0, 1),       # cancellation-suppressed
+                (9.0, 1000.0, 0, 1),     # below the Ritz floor
+                (30.0, 60.0, 0, 1), (20.0, 5.0, 3, 4), (16.0, 900.0, 1, 2)):
+            assert lt._ab_ceiling(nu_min, me_abs, l1, l2) == \
+                shared(nu_min, me_abs, l1, l2), (nu_min, me_abs, l1, l2)
+
+        # and the scoping itself is real: same nu and |ME|, different class
+        assert shared(50.0, 1000.0, 0, 1) < shared(50.0, 1000.0, 2, 3)
+
+
+# ---------------------------------------------------------------------------
+# Shipped tau_0 uncertainty vs the low-n' systematic
+# (audit: "A-vs-B spread does not cover the reproducible bias")
+# ---------------------------------------------------------------------------
+
+class TestTau0Uncertainty:
+    @pytest.mark.parametrize("state,anchors", sorted(BETEROV_VII_RB.items()))
+    def test_rb_interval_covers_beterov(self, state, anchors):
+        """The shipped tau_0 interval must contain the accepted value. The
+        A-vs-B spread alone does NOT: for Rb 50S it is 5.5 % against a
+        reproducible -8.7 % offset from Beterov Table VII, so the stated
+        band excluded 141.31 us. The low-n' model-potential systematic
+        (spec 02 SS7.1/B15, 5..10 % on radial elements to sub-floor
+        partners, propagated as (1+b)^2 - 1 through the sub-floor share of
+        Gamma_0) is what closes it."""
+        n, l, j = state
+        tau0_ref = anchors[0] * 1e-6
+        table = decay_table(RB87, n, l, j)
+        lo, hi = table.tau0_interval()
+        assert lo <= tau0_ref <= hi, (lo, tau0_ref, hi)
+
+    @pytest.mark.parametrize("state,anchors", sorted(BETEROV_VIII_CS.items()))
+    def test_cs_interval_covers_beterov(self, state, anchors):
+        """Same for Cs against Beterov Table VIII."""
+        n, l, j = state
+        tau0_ref = anchors[0] * 1e-6
+        lo, hi = decay_table(CS133, n, l, j).tau0_interval()
+        assert lo <= tau0_ref <= hi, (lo, tau0_ref, hi)
+
+    def test_spread_alone_does_not_cover_rb50s(self):
+        """The defect this interval fixes, stated as a test: the numerical
+        spread by itself excludes the Beterov value, so it must never be
+        shipped as THE uncertainty of tau_0."""
+        table = decay_table(RB87, 50, 0, 0.5)
+        tau0 = 1.0 / table.gamma0_rad_s
+        s = table.gamma0_spread_rel
+        assert not (tau0 * (1 - s) <= 141.31e-6 <= tau0 * (1 + s))
+        assert table.gamma0_bias_band_rel[1] > s
+
+    def test_systematic_scales_with_the_subfloor_share(self):
+        """The declared band is derived, not typed: it is the sub-floor
+        share of Gamma_0 times the spec-02 radial bias band propagated
+        through rate ~ R^2. Recomputed here from the channel table."""
+        table = decay_table(RB87, 50, 0, 0.5)
+        f = sum(c.rate_A for c in table.channels
+                if c.downward and c.sub_floor_partner
+                and not c.experimental_radial) / table.gamma0_rad_s
+        assert table.subfloor_gamma0_fraction == pytest.approx(f, rel=1e-12)
+        lo, hi = table.gamma0_bias_band_rel
+        assert lo == pytest.approx(f * (1.05**2 - 1.0), rel=1e-12)
+        assert hi == pytest.approx(f * (1.10**2 - 1.0), rel=1e-12)
+        assert 0.0 < f < 1.0
+
+    @pytest.mark.parametrize("state", [(20, 1, 1.5), (20, 2, 1.5)])
+    def test_s2_window_low_end_is_covered_not_untested(self, state):
+        """Spec 04 SS4.3 S2 declares a 10 % band for 20 <= n <= 70, and the
+        audit measured Rb nP1/2, nP3/2, nD3/2, nD5/2 BREACHING it at the low
+        end (n = 20: +11.8 %, +12.4 %, +13.0 %, +10.1 %) with no test
+        covering those n. These rows make the low end visible: the sum-vs-
+        fit deviation is asserted against the (independent) Beterov fit at
+        the size the audit measured, and the shipped tau_0 interval must
+        still contain the fit."""
+        n, l, j = state
+        table = decay_table(RB87, n, l, j)
+        tau_sum = 1.0 / table.gamma0_rad_s
+        fit = float(lt.radiative_lifetime_fit(RB87, n, l, j))
+        dev = tau_sum / fit - 1.0
+        assert 0.08 < dev < 0.16, f"S2 low-end deviation moved: {dev:+.3%}"
+        lo, hi = table.tau0_interval()
+        assert lo <= fit <= hi
+
+    def test_cs_np1_2_tension_is_declared_not_absorbed(self):
+        """The one series the declared systematic does NOT explain, recorded
+        rather than papered over. Over the whole in-scope grid (Rb/Cs x
+        S,P1/2,P3/2,D3/2,D5/2 x n = 20,30,50,70) the Beterov fit lies inside
+        tau0_interval() for 36 of 40 states; the exception is Cs nP1/2,
+        where the sum sits +23..28 % above the fit with NO n dependence
+        (+27.8 % at n=20, +23.2 % at n=70) — far more than the 5..10 %
+        spec-02 radial bias can produce, and in the opposite direction from
+        the Rb nS case. Cs nP3/2 agrees to ~1 %, and the sums put
+        tau(P1/2) > tau(P3/2) while Beterov's Table-II coefficients
+        (2.9921 vs 3.2849) put them the other way round — the same nP fit
+        tension spec 04 SS4.1 item 3 already flags. Escalated as a spec-09
+        register item, NOT absorbed into the code's uncertainty."""
+        for n in (20, 70):
+            table = decay_table(CS133, n, 1, 0.5)
+            fit = float(lt.radiative_lifetime_fit(CS133, n, 1, 0.5))
+            dev = 1.0 / table.gamma0_rad_s / fit - 1.0
+            assert 0.20 < dev < 0.32, f"Cs {n}P1/2 tension moved: {dev:+.3%}"
+            assert table.tau0_interval()[0] > fit      # still not covered
 
 
 # ---------------------------------------------------------------------------
@@ -527,6 +809,72 @@ class TestBudget:
         with pytest.raises(IntegrityError, match="C6"):
             build_budget(RB87, (50, 2, 2.5), cell, d.lasers,
                          d.Omega_p, d.Omega_c)
+
+    def test_perturber_density_is_elemental_not_isotope_partial(self):
+        """04<->05 interface (audit): the self-broadening beta and the Fermi
+        pseudopotential are both defined against the TOTAL elemental vapour
+        density — Weller 2011 quotes beta*N for a natural-abundance Rb cell,
+        and every ground-state atom inside the Rydberg orbit is a perturber
+        regardless of isotope. Independent checks: the budget density equals
+        rydsim.cell's elemental Alcock density computed here; Rb-85 and
+        Rb-87 (abundances 0.72 / 0.28) must see the SAME perturber density
+        while their isotope densities differ by the abundance ratio; and the
+        collisional terms equal beta*N / the Fermi coefficient times that
+        density, recomputed independently."""
+        d = default_cell("typical")
+        cell = replace(d.cell, alpha0_over_h_hz_v2m2=ALPHA0_RB50S_HZ_V2M2)
+        b87 = build_budget(RB87, (50, 0, 0.5), cell, d.lasers,
+                           d.Omega_p, d.Omega_c)
+        b85 = build_budget(RB85, (50, 0, 0.5), cell, d.lasers,
+                           d.Omega_p, d.Omega_c)
+        n_elem = number_density_m3("Rb", cell.T_cell_K)
+        assert b87.N_ground_m3 == pytest.approx(n_elem, rel=1e-12)
+        assert b85.N_ground_m3 == pytest.approx(n_elem, rel=1e-12)
+        assert b87.N_isotope_m3 / b85.N_isotope_m3 == pytest.approx(
+            RB87.abundance / RB85.abundance, rel=1e-12)
+        beta = lt.self_broadening_beta_hz_m3(RB87, "D2").value
+        assert b87.gamma_self_ge == pytest.approx(
+            math.pi * beta * n_elem, rel=1e-12)
+        assert b87.shift_fermi_hz == pytest.approx(
+            lt.fermi_shift_hz(RB87, n_elem), rel=1e-12)
+
+    def test_hot_cell_collisional_terms_match_spec04_magnitudes(self):
+        """Spec 04 SS2.3.5 magnitude anchors are ELEMENTAL: ~2e13 cm^-3 at
+        130 C giving ~2.2 MHz self-broadening and ~-2 MHz Fermi shift. With
+        the isotope-partial density the same cell reported 1.02 MHz and
+        -0.98 MHz — a 2.25x error in gamma_gr, the term spec 04 calls
+        dominant in hot cells. Reference values recomputed here from the
+        elemental Alcock density and the published coefficients."""
+        cell = CellParams(T_cell_K=403.15, E_stray_v_m=0.0)
+        b = build_budget(RB87, (50, 0, 0.5), cell, LaserParams(),
+                         1.0e6, 1.0e6)
+        n_elem = number_density_m3("Rb", 403.15)
+        assert 3.0e19 < n_elem < 4.0e19          # ~3.6e13 cm^-3 at 130 C
+        assert b.gamma_self_ge / math.pi == pytest.approx(
+            lt.self_broadening_fwhm_hz(RB87, "D2", n_elem), rel=1e-12)
+        assert 3.0e6 < b.gamma_self_ge / math.pi < 4.5e6
+        assert -4.0e6 < b.shift_fermi_hz < -3.0e6
+        assert b.gamma_ij()[("g", "r")] > 5.0e6
+
+    def test_below_n15_sum_path_is_usable(self):
+        """Audit: build_budget's 'sum' path — the route spec 04 SS7.1
+        designates FOR n < 15 — was blocked by the Beterov-window gate
+        inside the ~1 % W_BBR_ion term, with a message telling the caller to
+        use the path they had already selected. It must degrade to 'not
+        evaluated, reason recorded' instead. Gamma_r is checked against the
+        sums computed independently here; the direct public call still
+        raises."""
+        cell = CellParams(E_stray_v_m=0.0)
+        b = build_budget(RB87, (12, 0, 0.5), cell, LaserParams(),
+                         1.0e6, 1.0e6, gamma_r_method="sum")
+        table = decay_table(RB87, 12, 0, 0.5)
+        assert b.Gamma_r_rad == pytest.approx(table.gamma0_rad_s, rel=1e-12)
+        assert b.Gamma_r_bbr == pytest.approx(table.bbr_rate(300.0),
+                                              rel=1e-12)
+        assert b.W_bbr_ion == 0.0
+        assert any("photoionization not evaluated" in n for n in b.notes)
+        with pytest.raises(IntegrityError, match="15 <= n <= 80"):
+            lt.bbr_ionization_rate(RB87, 12, 0, 0.5, 300.0)
 
     def test_eit_sanity_width_r24(self):
         """Ruling R-24: the sanity form is spec 06's 2 gamma_gr +

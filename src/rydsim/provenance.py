@@ -21,6 +21,7 @@ class Confidence(str, Enum):
     """Confidence tag for a sourced value (spec integrity policy)."""
 
     VERIFIED = "VERIFIED"                  # checked against primary source
+    VERIFIED_ARC = "VERIFIED-ARC"          # matches ARC/secondary code, primary unfetched
     LITERATURE_RECALL = "LITERATURE-RECALL"  # standard literature value, not re-verified
     UNVERIFIED = "UNVERIFIED"              # from memory / provisional — flagged in outputs
     COMPUTED = "COMPUTED"                  # derived inside RydSim from tagged inputs

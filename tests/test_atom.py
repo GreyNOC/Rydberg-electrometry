@@ -23,8 +23,14 @@ from rydsim.atom import (
     RitzSeries,
     Species,
     binding_energy_hz,
+    coupling_laser_hz,
+    coupling_laser_sourced_hz,
     coupling_wavelength_m,
+    coupling_wavelength_sourced_m,
+    element_symbol,
     energy_hz,
+    energy_sourced_hz,
+    hyperfine_levels,
     hyperfine_shift_hz,
     n_star,
     polarization_defect,
@@ -37,8 +43,8 @@ from rydsim.atom import (
     rydberg_hfs_A_hz,
     transition_hz,
 )
-from rydsim.constants import RYD_HZ
-from rydsim.provenance import IntegrityError
+from rydsim.constants import C, RYD_HZ
+from rydsim.provenance import Confidence, IntegrityError
 
 THZ = 1e12
 GHZ = 1e9
@@ -263,11 +269,82 @@ def test_cs_erratum_value_not_encoded():
     assert "erratum" in CS133.e_ion_note
 
 
-def test_rb85_absolute_systematic_declared():
-    """Audit §3 item 5: Rb-85 absolute optical scale carries the +-40 MHz
-    Lee-1978/Sanguinetti E_I systematic as data, not a footnote."""
-    assert RB85.e_ion_systematic_hz == pytest.approx(40 * MHZ)
-    assert RB87.e_ion_systematic_hz == 0.0
+def test_rb85_absolute_systematic_rides_on_the_result():
+    """Audit §3 item 5 / R8: every Rb-85 ABSOLUTE optical frequency carries
+    the +-40 MHz Lee-1978/Sanguinetti E_I systematic in its UNCERTAINTY
+    FIELD — 'not a footnote'.
+
+    Asserting `RB85.e_ion_systematic_hz == 40 MHz` (what this test used to do)
+    only proves a number was typed into the dataclass; it passes unchanged
+    while every public output drops it on the floor. These assertions run on
+    actual results of the three absolute-scale entry points, and check the
+    decomposition audit §4 item 10 requires: statistical (the published E_I
+    fit uncertainty) kept SEPARATE from the declared systematic.
+    """
+    e = energy_sourced_hz(RB85, 50, 0, 0.5, ref="ground_centroid")
+    assert e.value == pytest.approx(energy_hz(RB85, 50, 0, 0.5,
+                                              ref="ground_centroid"))
+    assert e.systematic == pytest.approx(40 * MHZ)          # Lee/Sanguinetti
+    assert e.statistical == pytest.approx(7 * MHZ)          # Sanguinetti (7)
+    assert e.total_uncertainty == pytest.approx(math.hypot(7 * MHZ, 40 * MHZ))
+    assert e.as_sourced().uncertainty == pytest.approx(e.total_uncertainty)
+
+    c = coupling_laser_sourced_hz(RB85, "D2", 50, 2, 2.5)
+    assert c.systematic == pytest.approx(40 * MHZ)
+    # nu_c = E(state) - nu0(D2): BOTH published uncertainties enter.
+    assert c.statistical == pytest.approx(math.hypot(7 * MHZ, 14e3))
+
+    lam = coupling_wavelength_sourced_m(RB85, "D2", 50, 2, 2.5)
+    assert lam.value == pytest.approx(coupling_wavelength_m(RB85, "D2", 50,
+                                                            2, 2.5))
+    # dlambda/lambda = dnu/nu, propagated (not re-derived from the value)
+    assert lam.total_uncertainty / lam.value == pytest.approx(
+        c.total_uncertainty / c.value, rel=1e-12)
+
+    # Cs carries the +0.47 MHz 2025-erratum offset as a systematic (audit R3);
+    # Rb-87 (Mack, no tension) carries none.
+    assert energy_sourced_hz(CS133, 47, 2, 2.5).systematic == pytest.approx(
+        0.47 * MHZ)
+    assert energy_sourced_hz(RB87, 50, 0, 0.5).systematic == 0.0
+
+
+def test_binding_energy_is_immune_to_the_absolute_systematic():
+    """Audit R8's other half: E_I cancels in the binding energy, so
+    ref='ionization' must carry NEITHER the E_I statistical uncertainty nor
+    the systematic. If it did, every Rydberg-Rydberg interval would inherit a
+    40 MHz band it demonstrably does not have (test_interval_via_binding_
+    energies_not_absolute proves the cancellation is exact)."""
+    b = energy_sourced_hz(RB85, 50, 0, 0.5, ref="ionization")
+    assert b.statistical == 0.0
+    assert b.systematic == 0.0
+    assert b.total_uncertainty == 0.0
+    assert b.value == pytest.approx(-binding_energy_hz(RB85, 50, 0, 0.5))
+
+
+def test_validity_flags_ride_on_the_result_not_a_warning():
+    """Audit §3 item 1 requires the sub-MHz-grade floor to be 'attached to
+    the result'; a warnings.warn is shown once and can be filtered away.
+    Below n_min_mhz the flag is in the result's validity_flags (audit §4
+    item 8); above it the list is empty."""
+    with pytest.warns(UserWarning):
+        flagged = energy_sourced_hz(RB85, 15, 0, 0.5)
+    assert any("n_min_mhz" in f for f in flagged.validity_flags)
+    assert energy_sourced_hz(RB85, 50, 0, 0.5).validity_flags == ()
+    # l >= 5 leaves the fitted series entirely -> flagged as well
+    assert any("Eq. (1.6)" in f
+               for f in energy_sourced_hz(RB85, 50, 5, 5.5).validity_flags)
+
+
+def test_sourced_confidence_never_over_rates_an_arc_row():
+    """Audit §4 item 4: an ARC-transcribed defect row must not be reported as
+    VERIFIED. Rb-87 nS1/2 is Mack primary (VERIFIED); Rb-87 nF5/2 is
+    'VERIFIED-ARC (digits)', a class the provenance enum does not carry, so
+    it must come back one class DOWN, never up — with the verbatim tag kept
+    in the source string."""
+    assert energy_sourced_hz(RB87, 50, 0, 0.5).confidence is Confidence.VERIFIED
+    f = energy_sourced_hz(RB87, 50, 3, 2.5)
+    assert f.confidence is Confidence.LITERATURE_RECALL
+    assert "VERIFIED-ARC" in f.source
 
 
 def test_r11_centroid_sign():
@@ -291,6 +368,108 @@ def test_r15_coupling_wavelengths_computed_at_runtime():
     lam_cs = coupling_wavelength_m(CS133, "D2", 47, 2, 2.5)
     assert 508e-9 < lam_cs < 512e-9
     assert lam_cs == pytest.approx(509.4e-9, abs=1.0e-9)
+
+
+@pytest.mark.parametrize(
+    "n, mack_thz, row",
+    [
+        (19, 612.728_838_1, "AS-04: Mack 2011 Table III"),
+        (20, 614.232_154_2, "AS-05: Mack 2011"),
+        (21, 615.490_168_7, "AS-06: Mack 2011"),
+    ],
+)
+def test_r15_coupling_laser_against_published_absolute_frequency(n, mack_thz, row):
+    """INDEPENDENT anchor for the R-15 machinery: Mack 2011's measured
+    5P3/2(F=3) -> nS1/2 frequencies, +-1.5 MHz (the AS-04..06 tolerance).
+
+    coupling_laser_hz references the intermediate level at its hyperfine
+    CENTROID, Mack's lines start from F'=3, so the published value must be
+    corrected by dE_hfs(5P3/2, F=3) = +193.74 MHz, computed here from Steck's
+    A and B through Eq. (1.7). Nothing in the expectation comes from
+    rydsim.atom's own energy output: it is a published frequency plus a
+    published hyperfine constant. Measured deviations 0.73 / 0.57 / 0.06 MHz.
+
+    This is the check the shipped test suite lacked — the existing R-15 test
+    compares against the recalled round numbers 480.0/509.4 nm, which cannot
+    distinguish a correct lambda_c from one that is 0.5 % off.
+    """
+    dhfs_f3 = hyperfine_shift_hz(RB87.d2.upper_hfs, 1.5, 1.5, 3)
+    expected = mack_thz * THZ + dhfs_f3
+    assert coupling_laser_hz(RB87, "D2", n, 0, 0.5) == pytest.approx(
+        expected, abs=1.5 * MHZ), row
+    assert coupling_wavelength_m(RB87, "D2", n, 0, 0.5) == pytest.approx(
+        C / expected, rel=3e-9), row
+
+
+def test_r15_lambda_c_series_limit_identity():
+    """Structural identity binding lambda_c to the Rydberg series, checked
+    against three independently computed public quantities.
+
+    1/lambda_c(n) = (E_I - nu0)/c - (c*R_M)/(c * n*^2), so
+        (1/lambda_inf - 1/lambda_c(n)) * n*^2 == rydberg_constant_hz(sp)/c
+    exactly, for every n, l, j and both species. A wrong reference level
+    (ionization vs ground centroid), a dropped hyperfine centroid, or a sign
+    slip in the D-line subtraction all break it; the recalled 480 nm anchor
+    does not.
+    """
+    for sp, line, l, j in ((RB87, "D2", 2, 2.5), (RB85, "D2", 0, 0.5),
+                           (CS133, "D2", 2, 2.5), (CS133, "D1", 1, 1.5)):
+        dline = sp.d2 if line == "D2" else sp.d1
+        inv_lam_inf = (sp.e_ion_hz - dline.nu0_hz) / C
+        for n in (25, 40, 60, 100):
+            lam = coupling_wavelength_m(sp, line, n, l, j)
+            ns = n_star(sp, n, l, j)
+            assert (inv_lam_inf - 1.0 / lam) * ns**2 == pytest.approx(
+                rydberg_constant_hz(sp) / C, rel=1e-12)
+
+
+def test_r15_lambda_c_is_state_and_species_dependent():
+    """Why lock #10 forbids a hard-coded lambda_c: the AT/Doppler factor
+    lambda_c/lambda_p is the single multiplicative link between the measured
+    probe-axis splitting and the SI-traceable field, and lambda_c moves with
+    BOTH n and species. Pinning the size of the error a fixed 480 nm makes."""
+    lam = {n: float(coupling_wavelength_m(RB87, "D2", n, 2, 2.5))
+           for n in (20, 30, 50, 100)}
+    assert lam[20] > lam[30] > lam[50] > lam[100]        # monotone in n
+    assert (lam[20] - 480e-9) / 480e-9 > 0.013           # +1.3 % at n = 20
+    assert (lam[100] - 480e-9) / 480e-9 < -0.001         # -0.14 % at n = 100
+    # Cs is a different laser entirely. The quantity that multiplies the
+    # field is the lock-#10 mismatch lambda_c/lambda_p; leaving a Cs cell at
+    # the Rb default 480 nm biases it by exactly the audit's 6.19 %.
+    lam_cs = float(coupling_wavelength_m(CS133, "D2", 47, 2, 2.5))
+    mismatch_true = lam_cs / CS133.d2.lambda_vac_m
+    mismatch_at_480 = 480.0e-9 / CS133.d2.lambda_vac_m
+    assert mismatch_true == pytest.approx(0.598013, abs=1e-5)
+    assert mismatch_at_480 == pytest.approx(0.563151, abs=1e-5)
+    assert mismatch_true / mismatch_at_480 - 1.0 == pytest.approx(0.0619,
+                                                                  abs=5e-4)
+
+
+def test_coupling_laser_refuses_a_target_below_the_intermediate_level():
+    """Refuse-to-guess rather than return a negative wavelength. Constructed
+    with a species whose E_I is lowered so the Rydberg state falls under the
+    D2 upper level; every real state above the hard floor clears the D lines
+    by >= 480 THz, so this gate cannot fire on legitimate physics."""
+    import dataclasses
+    for n in (19, 30, 80):
+        assert coupling_laser_hz(RB87, "D2", n, 0, 0.5) > 0.0
+    sunk = dataclasses.replace(RB87, e_ion_hz=RB87.d2.nu0_hz - 1e9)
+    with pytest.raises(IntegrityError, match="not positive"):
+        coupling_laser_hz(sunk, "D2", 50, 0, 0.5)
+
+
+def test_element_symbol_is_the_single_source_of_the_species_mapping():
+    """Audit R10: the species -> element map lives in exactly one place.
+    Callers that need cell-side element tables must not slice the isotope
+    name; a species with no declared element refuses."""
+    assert element_symbol(RB85) == element_symbol(RB87) == "Rb"
+    assert element_symbol(CS133) == "Cs"
+    nameless = Species(
+        name="X1", mass_u=1.0, nuclear_spin=0.5, abundance=1.0,
+        e_ion_hz=1.0, e_ion_unc_hz=0.0, ground_n=1, alpha_core_au=0.0,
+        series={})
+    with pytest.raises(IntegrityError):
+        element_symbol(nameless)
 
 
 def test_rm_anchor_check_catches_regression():
@@ -318,6 +497,77 @@ def test_invalid_quantum_numbers_raise():
         hyperfine_shift_hz(RB87.ground_hfs, 1.5, 0.5, 5)   # F out of range
     with pytest.raises(ValueError):
         probe_transition_hz(RB87, "D2", 2, 5)   # F' outside I +- 3/2
+
+
+_HFS_LEVELS = [
+    ("Rb85 5S1/2", RB85.ground_hfs, 2.5, 0.5),
+    ("Rb87 5S1/2", RB87.ground_hfs, 1.5, 0.5),
+    ("Cs 6S1/2", CS133.ground_hfs, 3.5, 0.5),
+    ("Rb85 5P1/2", RB85.d1.upper_hfs, 2.5, 0.5),
+    ("Rb87 5P1/2", RB87.d1.upper_hfs, 1.5, 0.5),
+    ("Cs 6P1/2", CS133.d1.upper_hfs, 3.5, 0.5),
+    ("Rb85 5P3/2", RB85.d2.upper_hfs, 2.5, 1.5),
+    ("Rb87 5P3/2", RB87.d2.upper_hfs, 1.5, 1.5),
+    ("Cs 6P3/2", CS133.d2.upper_hfs, 3.5, 1.5),
+]
+
+
+@pytest.mark.parametrize("label, hfs, i_nuc, j_elec", _HFS_LEVELS)
+def test_hyperfine_centroid_sum_rule(label, hfs, i_nuc, j_elec):
+    """INDEPENDENT analytic identity: the hyperfine shifts are measured from
+    the fine-structure CENTROID, so sum_F (2F+1) dE(F) = 0 exactly — for the
+    magnetic-dipole and the electric-quadrupole term separately.
+
+    This pins three things no other test covers together: the Casimir
+    formula's K and B-ratio algebra, the degeneracy weights, and the F ladder
+    itself (drop or add one rung and the weighted sum stops vanishing).
+    Checked on all nine hyperfine levels the module ships.
+    """
+    levels = hyperfine_levels(i_nuc, j_elec)
+    shifts = [hyperfine_shift_hz(hfs, i_nuc, j_elec, f) for f in levels]
+    weighted = sum((2 * f + 1) * s for f, s in zip(levels, shifts))
+    scale = sum((2 * f + 1) * abs(s) for f, s in zip(levels, shifts))
+    assert scale > 0.0
+    assert abs(weighted) / scale < 1e-14, label
+
+
+@pytest.mark.parametrize("label, hfs, i_nuc, j_elec", _HFS_LEVELS)
+def test_hyperfine_rejects_F_off_the_integer_ladder(label, hfs, i_nuc, j_elec):
+    """Refuse-to-guess: F must run in INTEGER steps from |I-J| to I+J
+    (angular-momentum addition). The triangle bounds alone admit every
+    half-integer inside the interval, and Eq. (1.7) evaluates on them without
+    complaint — hyperfine_shift_hz(RB87.ground_hfs, 1.5, 0.5, 1.5) used to
+    return -1281.50 MHz for a level Rb-87 does not have.
+
+    Every in-interval value NOT on the ladder must raise; every value ON the
+    ladder must be accepted (the fix must not over-refuse).
+    """
+    levels = hyperfine_levels(i_nuc, j_elec)
+    assert levels == tuple(float(abs(i_nuc - j_elec) + k)
+                           for k in range(int(2 * min(i_nuc, j_elec)) + 1))
+    for f in levels:
+        hyperfine_shift_hz(hfs, i_nuc, j_elec, f)          # must not raise
+    bogus = [f + 0.5 for f in levels[:-1]]
+    assert bogus, label
+    for f in bogus:
+        with pytest.raises(ValueError, match="integer ladder"):
+            hyperfine_shift_hz(hfs, i_nuc, j_elec, f)
+
+
+def test_probe_transition_rejects_nonexistent_hyperfine_levels():
+    """The consequence the refusal prevents: probe_transition_hz(RB87, 'D2',
+    2, 2.5) used to return 384.227 966 11 THz — an entirely plausible D2
+    number sitting 149.09 MHz (about 25 natural linewidths, well inside the
+    Doppler profile) below the real F=2 -> F'=3 line."""
+    for sp, line, f, fp in ((RB87, "D2", 2, 2.5), (RB87, "D2", 1.5, 3),
+                            (CS133, "D1", 4, 3.5), (RB85, "D2", 2.5, 4)):
+        with pytest.raises(ValueError, match="integer ladder"):
+            probe_transition_hz(sp, line, f, fp)
+    # the real neighbours still work and bracket where the bogus value sat
+    assert probe_transition_hz(RB87, "D2", 2, 3) == pytest.approx(
+        384.228_115_2 * THZ, abs=0.1 * MHZ)
+    assert probe_transition_hz(RB87, "D2", 2, 2) < probe_transition_hz(
+        RB87, "D2", 2, 3)
 
 
 def test_vectorized_matches_scalar():

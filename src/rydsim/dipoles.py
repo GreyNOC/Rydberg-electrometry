@@ -22,11 +22,15 @@ Conventions (docs/spec/00-conventions.md):
 Integrity (docs/spec/00-integrity-audit.md):
 * R5: the Jing fixture mu_RF(Cs 47D5/2->48P3/2) = 1443.450 e a0 is
   LITERATURE-RECALL and is never used as an input — tests recompute it from
-  scratch through this module and assert 2 % agreement.
+  scratch through this module and assert 2 % agreement; when a recomputation
+  misses its anchor, R5 flags the FIXTURE, never the convention. See
+  ``C5E_CONVENTION_TENSION`` for the one anchor where that has happened.
 * SS4 item 4: every returned dipole carries the minimum confidence class
   encountered on its computation path (``confidence_floor``) plus the
   per-method radial dict and spread (SS4 items 5, 7).
-* SS4 item 7: every dipole is stamped with its convention.
+* SS4 item 7: every dipole is stamped with its convention. The convention set
+  is closed and every member is a published convention — no convention is
+  added to make a benchmark land (audit R5 / house no-fabrication rule).
 * Refusals: E1-forbidden pairs raise ``rydsim.provenance.IntegrityError``
   from the effective-dipole path (a silent 0 would invert to an infinite
   field); |l1 - l2| != 1 raises everywhere (not a dipole pair).
@@ -39,6 +43,13 @@ Sources for numeric contracts (transcribed in tests with tags):
 - Spec 02 SS7.1 / B15 — the documented +5..10 % model-potential bias of
   low-n D-line dipoles (Rb 5S->5P3/2 computes ~5.57 a0 vs 5.18 a0
   experiment-derived) [computed VERIFIED; bias band LITERATURE-RECALL].
+- Sedlacek et al., Nat. Phys. 8, 819 (2012) / arXiv:1205.4461 v1 — the C5e
+  RF-dipole anchor, whose stated convention does NOT reproduce its printed
+  number (``C5E_CONVENTION_TENSION``) [number VERIFIED; convention
+  UNVERIFIED].
+- Tu et al., Sci. Adv. 10, eads0683 (2024) — the C5f anchor, same
+  D5/2->P3/2 channel under an explicitly stretched sigma+ ladder
+  [VERIFIED, PMC full text].
 """
 
 from __future__ import annotations
@@ -57,7 +68,7 @@ from .radial import (A4_L1_NOTE, RadialMEResult, radial_matrix_element,
 __all__ = [
     "DipoleResult", "DLineClosureResult",
     "full_dipole_matrix_element", "mu_rf", "dline_closure",
-    "DLINE_BIAS_BAND", "MU_RF_CONVENTIONS",
+    "DLINE_BIAS_BAND", "MU_RF_CONVENTIONS", "C5E_CONVENTION_TENSION",
 ]
 
 # ---------------------------------------------------------------------------
@@ -121,7 +132,10 @@ def _series_provenance(sp: Species, l: int, j: float) -> tuple[str, str]:
 
 # MSD94 model-potential confidence for the radial layer (audit R20: LOW —
 # both transcriptions diffed; the lone Rb a4(l=1) last-digit discrepancy is
-# disclosed and bounded < 4e-8, see rydsim.radial.A4_L1_NOTE).
+# disclosed and bounded by rydsim.radial.A4_L1_NOTE, which this module
+# propagates verbatim into `sources` for Rb l=1 pairs). The bound itself is
+# deliberately NOT restated here: one owner, one number (audit R10
+# constant-drift rule) — rydsim.radial owns it.
 _MSD94_CONF = "VERIFIED"
 _ANGULAR_SOURCE = ("spec 03 Eq. (2.9) Wigner-Eckart chain (exact algebra, "
                    "dual-implementation validated) [VERIFIED]")
@@ -143,8 +157,8 @@ class DipoleResult:
     radial_a0 [a0]: signed Method-A consensus radial integral.
     radial_methods: per-method radial dict [a0] (model_potential / coulomb /
     kaulakys), verbatim from ``rydsim.radial``.
-    angular_factor: signed dimensionless A (or the rms A for the manifold
-    convention).
+    angular_factor: dimensionless A of spec 03 Eq. (2.9) — signed from
+    ``full_dipole_matrix_element``, |A| from ``mu_rf`` (magnitude convention).
     convention: dipole convention stamp, one of MU_RF_CONVENTIONS or
     'racah_mj_resolved' (audit SS4 item 7).
     confidence_floor: minimum confidence class on the path (audit SS4 item 4).
@@ -244,7 +258,9 @@ def _path_provenance(sp: Species, state1: tuple[int, int, float],
         "MSD94 model potential (PRA 49, 982 Table I, dual-transcription "
         f"diffed) [{_MSD94_CONF}]")
     tags.append(_MSD94_CONF)
-    if sp.name.startswith("Rb") and 1 in (state1[1], state2[1]):
+    from .atom import element_symbol
+
+    if element_symbol(sp) == "Rb" and 1 in (state1[1], state2[1]):
         sources.append(A4_L1_NOTE)
     sources.append(_ANGULAR_SOURCE)
     tags.append("VERIFIED")
@@ -291,24 +307,58 @@ def full_dipole_matrix_element(sp: Species, state1: tuple[int, int, float],
 # ---------------------------------------------------------------------------
 
 #: Supported effective-RF-dipole conventions (audit SS4 item 7 stamp values).
+#: CLOSED SET — both members are published conventions with a named source.
+#: A convention is never added to make a benchmark agree; a benchmark that
+#: does not reproduce under any published convention is a flagged FIXTURE
+#: (audit R5), recorded in ``C5E_CONVENTION_TENSION``.
 #: - 'nist_pi'  (DEFAULT, lock #11): co-linear pi geometry, m_j = +-1/2,
 #:   p = e a0 R |A(l,j,1/2 -> l',j',1/2; q=0)| — Simons/Gordon/Holloway 2016.
 #: - 'stretched': stretched fine-structure pair m_j = j -> m_j' = j',
 #:   q = j - j' (the sigma+-ladder cold-atom convention; Tu 2024 config —
 #:   their 5S1/2 F=2 mF=2 ground + sigma+ chain populates m_j = j).
-#: - 'pi_manifold_rms': sqrt(mean over populated m_j of A(m_j, q=0)^2) —
-#:   the rms pi-manifold dipole over |m_j| <= min(j, j'). For D5/2->P3/2
-#:   this is R/sqrt(5); it reproduces Sedlacek 2012's printed effective
-#:   4-level mu_RF = 1.37e-26 C*m to 0.3 % (their own "stretched hyperfine
-#:   states" description does NOT — documented convention tension,
-#:   spec 09 C5e / SS4.9).
-MU_RF_CONVENTIONS = ("nist_pi", "stretched", "pi_manifold_rms")
+#:
+#: An m_j-mixed ensemble (imperfect optical pumping) is NOT a third scalar
+#: convention: spec 03 SS2.3 requires it be modeled as a sum over the
+#: populated m_j with their individual AT splittings — a superposition of
+#: doublets, never one doublet at an rms dipole. Use
+#: ``full_dipole_matrix_element`` per m_j for that.
+MU_RF_CONVENTIONS = ("nist_pi", "stretched")
+
+
+#: Spec 09 C5e DOCUMENTED LITERATURE TENSION (audit R5; same register as
+#: ruling R-22, which already declares Jing's printed sqrt(2) an RMS-
+#: convention artifact). Sedlacek's printed effective RF dipole for
+#: Rb 53D5/2 -> 54P3/2 is reproduced by NEITHER published convention — the
+#: residual under the paper's own stated ("stretched hyperfine states")
+#: reading is a clean sqrt(2). Per audit R5 that flags the FIXTURE, not the
+#: code: nothing here is re-tuned to land on it, and no convention exists
+#: for that purpose. Every digit below is regenerated from a live run by
+#: tests/test_dipoles.py::test_c5e_tension_note_digits_track_live_computation
+#: so this shipped provenance string cannot go stale (audit R20 / A4_L1_NOTE
+#: failure mode). Consumers: report/finding provenance blocks.
+C5E_CONVENTION_TENSION = (
+    "spec 09 C5e (Sedlacek 2012, Rb 53D5/2->54P3/2, printed mu_RF = "
+    "1.37e-26 C*m = 1615.88 e*a0) is NOT reproduced by either published "
+    "convention on the spec-02 consensus radial R = 3622.78 a0 (three "
+    "methods agreeing to 6e-6): stretched (the paper's own stated reading) "
+    "= 2291.2 e*a0 (+41.8 %), nist_pi (lock #11) = 1774.8 e*a0 (+9.8 %). "
+    "The stretched residual is a factor sqrt(2): computed/printed = "
+    "1.41796, i.e. sqrt(2) to 0.26 % (ruling R-22 amplitude/RMS "
+    "artifact). Code-independent corroboration (no RydSim needed): Tu 2024 "
+    "print 1218 e*a0 for the SAME D5/2->P3/2 angular channel at "
+    "39D5/2->40P3/2 under an explicitly stretched sigma+ ladder, so the two "
+    "printed dipoles must scale as the radial ME alone; published Li-2003 / "
+    "Mack-2011 quantum defects give nu(53D)nu(54P)/nu(39D)nu(40P) = 1.8859, "
+    "but 1615.88/1218 = 1.3267 — short by 1.4215, i.e. sqrt(2) to 0.5 %. "
+    "FIXTURE FLAGGED per audit R5; number VERIFIED (v1 full text), its "
+    "convention UNVERIFIED (spec 09 SS9 register / SS7 rule 5)"
+)
 
 
 def _rf_angular(l1: int, j1: float, l2: int, j2: float,
                 convention: str) -> tuple[float, int | None, float | None,
                                           float | None]:
-    """(|A| or rms A, q, mj, mjp) for one mu_RF convention. Dimensionless."""
+    """(|A|, q, mj, mjp) for one mu_RF convention. Dimensionless."""
     if convention == "nist_pi":
         A = angular_factor(l1, j1, 0.5, l2, j2, 0.5, 0)
         return abs(A), 0, 0.5, 0.5
@@ -320,14 +370,10 @@ def _rf_angular(l1: int, j1: float, l2: int, j2: float,
                 f"j2={j2} (spec 03 SS2.4)")
         A = angular_factor(l1, j1, j1, l2, j2, j2, q)
         return abs(A), q, j1, j2
-    if convention == "pi_manifold_rms":
-        j_min = min(j1, j2)
-        mjs = [0.5 + k for k in range(int(j_min + 0.5))]
-        sq = [angular_factor(l1, j1, m, l2, j2, m, 0) ** 2 for m in mjs]
-        return math.sqrt(sum(sq) / len(sq)), 0, None, None
     raise ValueError(
         f"unknown mu_RF convention {convention!r}; supported: "
-        f"{MU_RF_CONVENTIONS}")
+        f"{MU_RF_CONVENTIONS} (closed set — a convention is never added to "
+        "make a benchmark agree; see C5E_CONVENTION_TENSION)")
 
 
 def mu_rf(sp: Species, state1: tuple[int, int, float],
@@ -339,10 +385,10 @@ def mu_rf(sp: Species, state1: tuple[int, int, float],
     with E_RF the peak amplitude (locks #3/#4). Default convention
     'nist_pi' is normative (spec 00 lock #11 / spec 03 SS2.5): co-linear pi
     geometry, m_j = +-1/2, p = e a0 |R| |A(l,j,1/2 -> l',j',1/2; q=0)|.
-    See MU_RF_CONVENTIONS for the two literature-matching alternates; the
-    convention is stamped on the result (audit SS4 item 7). value_Cm >= 0
-    (magnitude convention). Uncertainty = |value| * radial spread (audit SS4
-    item 5).
+    MU_RF_CONVENTIONS is a closed set of published conventions ('stretched'
+    is the sigma+-ladder alternate); the convention is stamped on the result
+    (audit SS4 item 7). value_Cm >= 0 (magnitude convention). Uncertainty =
+    |value| * radial spread (audit SS4 item 5).
 
     Raises IntegrityError for an E1-forbidden pair rather than returning a
     zero dipole that would silently invert to an infinite field (spec 03

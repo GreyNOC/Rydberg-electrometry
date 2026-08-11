@@ -154,7 +154,7 @@ Fundamental constants: from `scipy.constants` CODATA only (see `rydsim.constants
 | TRK sum rule | Σ_k f(1s→k) = 1 exactly (discrete + continuum) | exact | VERIFIED |
 | Discrete part of TRK sum (n ≤ ∞ bound only) | ≈ 0.5650 (continuum carries ≈ 0.4350) | Bethe & Salpeter, standard | LITERATURE-RECALL (self-check: 1 − computed continuum integral) |
 
-### 3.3 Quantum-defect sources (values live in docs/spec/03; corpus needs only the citations + spot checks)
+### 3.3 Quantum-defect sources (values live in docs/spec/01; corpus needs only the citations + spot checks)
 
 | Item | Source | Confidence |
 |---|---|---|
@@ -163,7 +163,7 @@ Fundamental constants: from `scipy.constants` CODATA only (see `rydsim.constants
 | δ→0 hydrogenic limit | exact | VERIFIED (analytic) |
 
 The five RF transition frequencies in §3.5 are the corpus's *external* test of whichever defect
-values spec 03 adopts: if the defects are wrong at the 10⁻⁴ level, the predicted mm-wave/microwave
+values spec 01 adopts: if the defects are wrong at the 10⁻⁴ level, the predicted mm-wave/microwave
 intervals miss by many MHz and C4 fails. This is deliberate: the corpus does not need to restate the
 defect tables to test them.
 
@@ -463,13 +463,49 @@ Tolerance semantics per §2.11/§5. "ORDER" = within factor 3 unless stated.
 | C5b | ⟨6S1/2‖er‖6P3/2⟩ Cs | 4.4837 e·a0 | 2% rel | Steck Cs | VERIFIED |
 | C5c | Γ(Rb D2) from C5a pipeline | 2π·6.0666 MHz | 4% rel | Steck Rb-87 | VERIFIED |
 | C5d | Γ(Cs D2) from C5b pipeline | 2π·5.234 MHz | 4% rel | Steck Cs | VERIFIED |
-| C5e | d(Rb 53D5/2→54P3/2), Sedlacek convention (stretched-state 4-level) | 1.37×10⁻²⁶ C·m | 5% rel | Sedlacek 2012 | VERIFIED (number); convention risk flagged §4.9 |
+| C5e | d(Rb 53D5/2→54P3/2), Sedlacek convention (stretched-state 4-level) | 1.37×10⁻²⁶ C·m | 5% rel | Sedlacek 2012 | **DOCUMENTED TENSION — not a passing benchmark.** Printed *number* VERIFIED (arXiv:1205.4461 v1); its *convention* **UNVERIFIED** (§9 register). Reproduced by **no** published convention; see the blockquote below. Expected value and tolerance unchanged (§7 rule 5). Never gates a release (§8.10). |
 | C5f | d(Rb 39D5/2→40P3/2) | 1218 e·a0 | 5% rel | Tu 2024 | VERIFIED (number; convention as in paper) |
 | C6a | Superhet optimal LO: argmax slope at Ω_L | Γ_EIT/√3 | 5% rel | Jing 2020 suppl. | VERIFIED |
 | C6b | Superhet max slope | 3√3·χ0/(8Γ) | 5% rel | Jing 2020 suppl. | VERIFIED |
 | C7 | Doppler FWHM of simulated Rb D2 absorption at 300 K vs analytic Gaussian √(8ln2·k_BT/m)·ν0/c | ≈0.51 GHz | 1% rel | kinetic theory | VERIFIED (analytic) |
-| C8 | Cs vapor density at 25 °C from RydSim vapor-pressure model | 4.89×10¹⁰ cm⁻³ (Jing's stated room-T value) | factor 1.5 (T uncertainty ±3 °C) | Jing 2020 + vapor-pressure fit (spec 02) | VERIFIED (target number) |
+| C8 | Cs vapor density at 25 °C from RydSim vapor-pressure model | 4.89×10¹⁰ cm⁻³ (Jing's stated room-T value) | factor 1.5 (T uncertainty ±3 °C) | Jing 2020 + vapor-pressure fit (spec 05) | VERIFIED (target number) |
 | C9 | Zeeman tuning rate (Cs 45D5/2→46P3/2, stretched mJ) | (μ_B/h)·(g_J4 m_J4 − g_J3 m_J3), μ_B/h = 1.39962 MHz/G | 1% rel | Comms. Phys. 2026 formula + CODATA | VERIFIED |
+
+> **Documented tension (benchmark C5e):** Sedlacek's printed effective RF dipole for
+> Rb 53D₅/₂→54P₃/₂, **1.37×10⁻²⁶ C·m**, is reproduced by **neither** published convention in
+> `rydsim.dipoles.MU_RF_CONVENTIONS` (a closed set: `stretched`, `nist_pi`), evaluated on the
+> spec-02 consensus radial **R = 3622.78 a₀** (three methods agreeing to 6×10⁻⁶):
+> `stretched` — the paper's *own stated reading* ("4-level model, stretched hyperfine states") —
+> gives **1.9426×10⁻²⁶ C·m (+41.8 %)**, and `nist_pi` (spec 00 lock #11, the normative default)
+> gives **1.5047×10⁻²⁶ C·m (+9.8 %)**. Both miss C5e's 5 % tolerance *and* audit R5's 2 %.
+> Per **audit R5 that flags the FIXTURE, not the code**: the invented `pi_manifold_rms` averaging
+> rule that had previously been used to force agreement is **removed from the code**, and no
+> convention is ever added to make a benchmark agree. (§4.9's "compare like with like" rule is what
+> this benchmark exercises; here the like-for-like comparison is the thing that fails.)
+>
+> The **printed number stays VERIFIED** (arXiv:1205.4461 v1 full text); **its convention becomes
+> UNVERIFIED** (§9 register — same amplitude-vs-RMS artifact class as ruling R-22's Jing √2).
+> The residual under the paper's own convention is a clean **√2**: computed/printed = 1.41796,
+> i.e. √2 to **0.26 %** — and the radial layer is not the suspect, since three methods agree to
+> better than 10⁻⁴ and no radial error of size √2 is available. Independent, **code-free**
+> corroboration: Tu 2024 print 1218 e·a₀ for the *same* D₅/₂→P₃/₂ angular channel
+> (39D₅/₂→40P₃/₂) under an explicitly stretched σ⁺ ladder, so the two printed dipoles must scale
+> as the radial ME alone; published Li-2003 / Mack-2011 defects give
+> ν(53D)ν(54P)/ν(39D)ν(40P) = **1.8859** while 1615.88/1218 = **1.3267** — short by **1.4215**,
+> i.e. √2 to **0.5 %**.
+>
+> **The expected value (1.37×10⁻²⁶ C·m) and the 5 % tolerance are NOT changed** — C5e is recorded
+> as a tension, not re-toleranced (§7 rule 5; audit §3 item 38). C5e must not be reported as a
+> passing TIGHT benchmark, and being UNVERIFIED-convention it can never gate a release (§8.10).
+
+The normative statement is **shipped and test-bound** as `rydsim.dipoles.C5E_CONVENTION_TENSION`
+(every digit regenerated from a live run by
+`tests/test_dipoles.py::test_c5e_tension_note_digits_track_live_computation`, so this provenance
+string cannot go stale), verbatim:
+
+```text
+spec 09 C5e (Sedlacek 2012, Rb 53D5/2->54P3/2, printed mu_RF = 1.37e-26 C*m = 1615.88 e*a0) is NOT reproduced by either published convention on the spec-02 consensus radial R = 3622.78 a0 (three methods agreeing to 6e-6): stretched (the paper's own stated reading) = 2291.2 e*a0 (+41.8 %), nist_pi (lock #11) = 1774.8 e*a0 (+9.8 %). The stretched residual is a factor sqrt(2): computed/printed = 1.41796, i.e. sqrt(2) to 0.26 % (ruling R-22 amplitude/RMS artifact). Code-independent corroboration (no RydSim needed): Tu 2024 print 1218 e*a0 for the SAME D5/2->P3/2 angular channel at 39D5/2->40P3/2 under an explicitly stretched sigma+ ladder, so the two printed dipoles must scale as the radial ME alone; published Li-2003 / Mack-2011 quantum defects give nu(53D)nu(54P)/nu(39D)nu(40P) = 1.8859, but 1615.88/1218 = 1.3267 — short by 1.4215, i.e. sqrt(2) to 0.5 %. FIXTURE FLAGGED per audit R5; number VERIFIED (v1 full text), its convention UNVERIFIED (spec 09 SS9 register / SS7 rule 5)
+```
 
 ### E-family — experimental reproduction
 
@@ -568,6 +604,7 @@ Any RydSim output presented as a *finding* must carry this caveat block (report_
 | Discrete TRK fraction 0.5650 | LITERATURE-RECALL (Bethe–Salpeter) | A4b continuum computation |
 | Jing LO frequency beyond "6.94 GHz" | UNVERIFIED | C4b at 3 s.f. only |
 | Jing integration time behind the 780 pV/cm minimum field | UNVERIFIED | not benchmarked |
+| Sedlacek 2012 effective-RF-dipole convention behind the printed 1.37e-26 C·m | UNVERIFIED (convention; number VERIFIED from arXiv:1205.4461 v1) | C5e |
 | Sedlacek Nature-published version deltas vs arXiv v1 (incl. the 1.625 prose) | UNVERIFIED (paywalled) | A11 numerical adjudication |
 | Holloway JAP 2017 numeric uncertainty budget | UNVERIFIED (citation + central linearity claim verified from AIP abstract) | fetch before release (E9.2+); E9.1 qualitative regime check stands now |
 | npj QM 2026 cell temperature; Comms. Phys. 2026 exact per-point NEF list | UNVERIFIED | graded QUALITATIVE/ORDER only |

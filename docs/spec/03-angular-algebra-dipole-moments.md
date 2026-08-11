@@ -14,6 +14,17 @@
 > float-vs-oracle cross-check that **corrected** an earlier overclaim of generic large-j float
 > accuracy (see §4.3.4). Items not verifiable are tagged LITERATURE-RECALL or UNVERIFIED inline.
 
+> **Amendment (2026-08-10, post-audit remediation; supersedes the paragraph above where they
+> disagree).** Three changes bring this document into agreement with the audited, remediated code:
+> **(a)** §2.7's direction rule for the oscillator strength is corrected — the previous sentence
+> *"emission f is negative via the same formula"* was **wrong** and caused a confirmed
+> implementation defect (|f| overstated by g_e/g_g, a factor 2 on any D2 line). **(b)** The
+> float-path accuracy figure of §4.3.4 (`4.2e-12`, rank-1 3j) is **withdrawn as not reproducible**
+> — an exhaustive rank-1 sweep measures 2.9e-11 on the bare float sum — and is replaced by the
+> **construction** bound the shipped code now enforces; the companion 6j figure (3.0e-13)
+> reproduced and is kept. **(c)** The exact-rational oracle is promoted from a test-only artefact
+> to **shipped public API** (§5). Sections touched: §2.7, §4.3.4, §4.3.6, §5, §6, §7.9.
+
 ---
 
 ## 1. Scope
@@ -30,8 +41,9 @@ Defines, with a single self-consistent phase convention:
    Doppler-broadened hot vapor.
 5. D-line reduced elements as the first-class validation of the radial machinery (doc 02).
 6. Oscillator strengths, Thomas–Reiche–Kuhn (TRK) sum rule, Einstein A coefficients.
-7. Exact Wigner 3j/6j implementation (log-factorial Racah sums; **scipy has no 3j/6j** — confirmed:
-   `scipy.special` contains no Wigner symbols; sympy is banned per project rules).
+7. Exact Wigner 3j/6j implementation (log-factorial Racah sums **plus a shipped exact-rational
+   fallback and bound gate**, §4.3.4/§4.3.6; **scipy has no 3j/6j** — confirmed: `scipy.special`
+   contains no Wigner symbols; sympy is banned per project rules outside the test suite).
 
 Out of scope: radial integral computation (doc 02), Stark/Zeeman mixing (Stark doc), optical Bloch /
 EIT lineshape dynamics (EIT doc), blackbody/lifetime aggregation (lifetimes doc).
@@ -300,12 +312,34 @@ d_eff,far = <J||er||J'>_S / √3          (Rb-87 D2: 4.22752/√3 = 2.44076 e·a
 
 ### 2.7 Oscillator strengths, TRK sum rule, Einstein A
 
-**Absorption oscillator strength** (dimensionless; lower state i = (l,j), upper f = (l',j'),
-ω = (E_f − E_i)/ħ > 0 for absorption; emission f is negative via the same formula):
+**Oscillator strength** (dimensionless; **initial** state i = (l,j), **final** state f = (l',j'),
+ω_fi = (E_f − E_i)/ħ — positive for absorption, negative for emission):
 
 ```
-f_(i→f) = (2 m_e ω) / (3 ħ (2j+1)) · |<j||er||j'>_R|² / e²                                     (2.17)
+f_(i→f) = (2 m_e ω_fi) / (3 ħ (2j_i+1)) · |<i||er||f>_R|² / e²                                 (2.17)
 ```
+
+**The degeneracy is the INITIAL state's — read this before implementing (2.17).**
+`g_i = 2j_i + 1` in the denominator belongs to the state the transition starts *from*, whichever
+direction that is. Emission is therefore **not** "the same formula with a negative ω": the Racah
+reduced element's magnitude is direction-symmetric (`|<i||er||f>|² = |<f||er||i>|²`, §2.1), but the
+degeneracy is not, so the two directions differ by the degeneracy ratio as well as by sign:
+
+```
+f_(e→g) = − (g_g/g_e) · f_(g→e)        ⇔        g_i · f_(i→f) = − g_f · f_(f→i)                (2.17a)
+```
+
+Worked check (Rb-87 D2, 5S₁/₂ ↔ 5P₃/₂; g_g = 2, g_e = 4; d_S = 4.22752 e·a₀ → Racah via Eq. 2.3;
+reproduced numerically against the shipped implementation): **f_(g→e) = +0.695772**,
+**f_(e→g) = −0.347886**, ratio exactly −1/2, and `g_g f_(g→e) + g_e f_(e→g) = 0` to machine
+precision. Evaluating the *emission* direction with the *lower* state's j returns −0.695772 —
+|f| too large by exactly `g_e/g_g` = **2**.
+
+> **Defect provenance (do not restore the old wording).** The sentence this paragraph replaces
+> ("emission f is negative via the same formula") is the confirmed cause of an implementation
+> defect found by the 2026-08-10 audit. The corrected contract is now carried in the code: the
+> third parameter of `oscillator_strength` is named **`j_initial`** (not `j_lower`) precisely so
+> the direction cannot be silently mis-supplied — see §5.
 
 l-basis equivalent (spin-free, for hydrogenic tests; a.u.: f = (2/3) ω_au · max(l,l')/(2l+1) · R_au²):
 
@@ -324,6 +358,10 @@ Steck's Eq. (4) (verified from PDF) links f and Γ: `Γ = (e²ω₀²)/(2π ε�
                           downward transitions enter with negative f)                          (2.19)
 ```
 
+Every term of (2.19) must be an `f_(i→f)` for the **same** initial state i, i.e. Eq. 2.17 evaluated
+with **that state's** g_i (Eq. 2.17a). A downward channel scored with the lower level's degeneracy is
+wrong by g_upper/g_lower and the error does **not** cancel across the sum.
+
 Partial (per-Δl) sum rules — Bethe & Salpeter, *QM of One- and Two-Electron Atoms*, §61
 [LITERATURE-RECALL for attribution; the pair is self-verifying since they sum to 1 identically]:
 
@@ -339,7 +377,8 @@ attribution Bethe–Salpeter §63 — implementation self-check: discrete + nume
 must total 1.000 ± 0.005].
 
 **Alkali caveat (quantitative):** from the *verified* D-line dipoles, f(Rb-87 D2) = 0.696 and
-f(D1) = 0.342 ⇒ principal doublet alone sums to 1.038 > 1. The valence-electron TRK is violated at
+f(D1) = 0.342 (both **absorption** from 5S₁/₂, g_i = 2; recomputed this pass as 0.695772 and
+0.342303) ⇒ principal doublet alone sums to 1.038 > 1. The valence-electron TRK is violated at
 the few-% level by core–valence coupling. For Rb/Cs use TRK only as a sanity band
 `0.95 ≤ Σf ≤ 1.10`; the *exact* test (tolerance 0.5%) is reserved for the hydrogenic-potential mode
 of the radial engine.
@@ -450,26 +489,64 @@ With `S1 = j1+j2+j3, S2 = j1+j5+j6, S3 = j4+j2+j6, S4 = j4+j5+j3`,
    triangles *before* touching any factorial. Downstream code relies on exact zeros.
 3. **Log-factorials.** Precompute `lgf[n] = ln n!` once (cumulative `np.log` sum or `math.lgamma`),
    table length ≥ 4·j_max + 3 (j_max ≈ 200 → ~1000 doubles).
-4. **Alternating-sum stability.** Factor the largest term out of the k-sum:
-   `ln_t_k` per term, `s = Σ (−1)^k exp(ln_t_k − max_k ln_t_k)`, result
-   `= phase · s · exp(prefactor + max_k ln_t_k)`. **Measured accuracy vs. exact-rational oracle**
-   (random grids, this session): *rank-1 3j* (j₂ = 1, the only 3j RydSim's dipole chain uses,
-   k-sum ≤ 3 terms): max rel err **4.2 × 10⁻¹²** up to j = 150 (2000 samples). *6j of type
-   {l j ½; j′ l′ 1}*: max **3.0 × 10⁻¹³** up to l = 150. *Generic* symbols degrade with j from
-   alternating-sum cancellation: generic 3j ≤ 2.4 × 10⁻¹⁴ (j ≤ 10), ≤ 3.4 × 10⁻¹⁰ (j ≤ 30),
-   ≤ 5 × 10⁻⁶ (j ≤ 60), **worst observed 8.2 × 10⁻⁵ at j ≈ 55–70** (19–41-term sums, small-value
-   outputs); generic 6j (j ≤ 60) worst 3.8 × 10⁻⁷. Consequence: the float path is certified only
-   for the rank-1 symbols of this spec; any generic large-j (> 30) use elsewhere must route through
-   the exact-rational oracle. Pytest tolerance: 1e-9 relative on rank-1 (any j ≤ 150) and on
-   generic j ≤ 20.
+4. **Alternating-sum stability — and why the bare float sum is not shippable.** Factor the largest
+   term out of the k-sum: `ln_t_k` per term, `s = Σ (−1)^k exp(ln_t_k − max_k ln_t_k)`, result
+   `= phase · s · exp(prefactor + max_k ln_t_k)`. This is *necessary but not sufficient*: the
+   residual relative error is `~L·ε/R` with `L` the magnitude of the log-factorials entering the
+   largest term and `R = |Σ terms| / Σ|terms|` the cancellation ratio, and `R → 0` for generic
+   symbols at large j. The bare float path has **no error bound at all** — the definitive
+   counterexample, reproduced this pass:
+
+   ```
+   3j(100, 90, 80; 0, 0, 0)   bare float sum  = +2.5216            (wrong SIGN)
+                              exact           = −6.783 × 10⁻³      (372× smaller)
+                              elementary bound  |3j| ≤ 1/√(2j_max+1) = 0.070535   (36× exceeded)
+   ```
+
+   All of j ≤ 150, i.e. *inside* the contract §5 states. The generic-grid measurements from the
+   original spec-preparation sweeps are retained for history — generic 3j ≤ 2.4 × 10⁻¹⁴ (j ≤ 10),
+   ≤ 3.4 × 10⁻¹⁰ (j ≤ 30), ≤ 5 × 10⁻⁶ (j ≤ 60), worst observed 8.2 × 10⁻⁵ at j ≈ 55–70; generic
+   6j (j ≤ 60) worst 3.8 × 10⁻⁷ — but they are **grid-dependent observations, NOT bounds**, and
+   must never be quoted as accuracy claims: the case above exceeds every one of them by orders of
+   magnitude, and re-sweeping a different pseudo-random generic grid at j ≤ 60 already reaches
+   ~8 × 10⁻⁴. Likewise the rank-1 figure this section previously carried, *max rel err
+   4.2 × 10⁻¹² up to j = 150*, is **WITHDRAWN — not reproducible**: an exhaustive rank-1 sweep
+   measures **2.9 × 10⁻¹¹** on the bare float path (worst case `3j(141.5, 1, 141.5; −½, 0, +½)`,
+   7× the withdrawn claim). The companion 6j figure **3.0 × 10⁻¹³** for the dipole-chain type
+   {l j ½; j′ l′ 1} to l = 150 **did** reproduce and stands.
+
+   **Normative contract (what the code now does, `rydsim.wigner`).** Every public 3j/6j evaluates
+   the float sum *together with its own round-off estimate* `4(1+L)ε/R`; if the estimate exceeds
+   `FLOAT_PATH_TARGET_REL = 1e-12` the symbol is recomputed in **exact rational arithmetic**
+   (`wigner_3j_exact` / `wigner_6j_exact`, `fractions.Fraction`, no floating point before the final
+   square root); the returned value is then checked against the elementary orthogonality bound and
+   `rydsim.provenance.IntegrityError` is raised rather than return a mathematically impossible
+   number. Hence:
+
+   > **relative error ≤ 1e-12 by construction at any j and any rank** (float sum with round-off
+   > estimate, exact-rational fallback); measured **6.6e-14** rank-1 to j = 150, **5.4e-14** generic
+   > 3j, **2.9e-14** generic 6j, *printed by* `tests/test_wigner.py`.
+
+   These three figures are emitted by the test run, not transcribed into an assertion — the
+   assertions are `rel ≤ FLOAT_PATH_TARGET_REL`. The routing is automatic, so the "route to the
+   exact-rational oracle" of `00-integrity-audit.md` §3 refusal #13 is taken by the library rather
+   than left to the caller. Pytest tolerance: 1e-12 relative on the rank-1 sweep and on the generic
+   3j/6j grids (`tests/test_wigner.py`); the older 1e-9 property grids of §6 remain as a
+   looser independent check.
 5. **Caching & vectorization.** `functools.lru_cache` on doubled-int tuples. Angular factors
    (Eq. 2.9) are n-independent → memoize; a full simulation touches O(10²) distinct symbols. Provide
    array frontends that broadcast with `np.vectorize` (cache makes this O(1) per element); do NOT
    attempt a "vectorized Racah sum" — unnecessary complexity.
-6. **Exact-rational test oracle.** Ship (in tests only) a second implementation using
+6. **Exact-rational oracle — SHIPPED, not test-only.** A second implementation using
    `fractions.Fraction` + integer factorials returning `(sign, exact_square)`; value
-   `= sign·√(p/q)`. Cross-validate the float path on a randomized grid j ≤ 60 (done this session; see
-   §6). This is the no-fabrication guarantee for the whole angular layer.
+   `= sign·√(p/q)`, converted by `exact_to_float` through `ln` of numerator/denominator so squares
+   that over/underflow a double (j beyond ~150) still convert to the nearest representable value.
+   Per rule 4 this is no longer an artefact confined to `tests/`: it lives in `rydsim.wigner`, is
+   re-exported from `rydsim.angular`, and is what the public symbols fall back to automatically.
+   It remains the cross-validation instrument as well (float-vs-oracle grids, §6), and is itself
+   cross-checked against `sympy.physics.wigner` in `tests/test_wigner.py` — sympy stays a
+   test-suite-only dependency, never imported by `src/rydsim/`. This is the no-fabrication
+   guarantee for the whole angular layer.
 7. **Convergence criteria:** none — every formula is a finite closed sum. The only numerical knobs
    are the lgf table size and the tolerance guard of rule 1.
 8. **Phase-convention regression trap:** never "fix" signs to match another code's table. ARC,
@@ -495,10 +572,15 @@ class FineState:
 def wigner_3j(j1, j2, j3, m1, m2, m3) -> float | np.ndarray:
     """Wigner 3j, Condon-Shortley/Racah conventions (Sec 4.1). Scalar or broadcast arrays.
     Exact 0.0 on any selection-rule violation. Raises ValueError on non-(half)integer inputs.
-    Accuracy: <=1e-12 relative for j<=150 (validated vs exact-rational oracle)."""
+    Accuracy: <=1e-12 relative UNCONDITIONALLY in j and in rank -- the log-factorial sum is
+    used only where its own round-off estimate certifies it, otherwise the exact-rational
+    path runs (Sec 4.3.4). Raises rydsim.provenance.IntegrityError rather than return a value
+    outside the elementary bound |3j| <= 1/sqrt(2*j_max+1)."""
 
 def wigner_6j(j1, j2, j3, j4, j5, j6) -> float | np.ndarray:
-    """Wigner 6j via Racah sum (Sec 4.2). Exact 0.0 when any of the 4 triads fails."""
+    """Wigner 6j via Racah sum (Sec 4.2). Exact 0.0 when any of the 4 triads fails.
+    Same unconditional <=1e-12 accuracy contract and bound gate as wigner_3j (the 6j bound
+    is the column-orthogonality one, 1/sqrt(max column (2j+1)(2j'+1)))."""
 
 def reduced_C1(l: int, lp: int) -> float:
     """<l||C^(1)||l'> = (-1)^l sqrt((2l+1)(2l'+1)) (l 1 l'; 0 0 0).
@@ -534,22 +616,44 @@ def einstein_A(omega0: float, d_reduced_racah_Cm: float, j_upper: float) -> floa
     """A_[e->g] [1/s] = omega0^3 * |<g||er||e>_R|^2 / (3 pi eps0 hbar c^3 (2*j_upper+1)). Eq. 2.20.
     omega0 in rad/s, d in C*m. Vectorized over omega0/d."""
 
-def oscillator_strength(omega: float, d_reduced_racah_Cm: float, j_lower: float) -> float:
-    """f (dimensionless), Eq. 2.17; omega>0 absorption, sign follows omega."""
+def oscillator_strength(omega: float, d_reduced_racah_Cm: float, j_initial: float) -> float:
+    """f_(i->f) (dimensionless), Eq. 2.17; omega = omega_fi, sign follows omega.
+    j_initial is the INITIAL state's j -- the lower level for omega>0 (absorption), the UPPER
+    level for omega<0 (emission). Not 'j_lower': passing the lower j with a negative omega
+    overstates |f| by g_upper/g_lower (exactly 2x on a D2 line) -- Eq. 2.17a.
+    Contract: f_(e->g) == -(g_g/g_e) f_(g->e); Rb-87 D2 +0.695772 / -0.347886."""
 
 def oscillator_strength_l(omega: float, radial_integral_a0: float, l: int, lp: int) -> float:
     """Spin-free l-basis f, Eq. 2.18 (hydrogenic tests, TRK)."""
 
 def trk_sum(f_values: np.ndarray) -> float:
-    """Convenience: returns sum; caller supplies discrete+continuum set. Test helper, Eq. 2.19."""
+    """Convenience: returns sum; caller supplies discrete+continuum set. Test helper, Eq. 2.19.
+    Every term must come from the SAME initial state (Eq. 2.17a)."""
 
-# tests/oracle_wigner.py  (test-only, exact rational)
+# --- exact-rational oracle: PUBLIC API (Sec 4.3.6), exported from BOTH
+#     rydsim.wigner and rydsim.angular. Not a test-only artefact.
 def wigner_3j_exact(j1, j2, j3, m1, m2, m3) -> tuple[int, "Fraction"]:
-    """(sign, exact square as Fraction); value = sign*sqrt(square). Ground truth for wigner_3j."""
+    """(sign, exact square as Fraction); value = sign*sqrt(square). Exact at any j and any
+    rank. Ground truth for wigner_3j, and the route wigner_3j itself takes when the float
+    sum cannot certify itself (Sec 4.3.4)."""
+
+def wigner_6j_exact(j1, j2, j3, j4, j5, j6) -> tuple[int, "Fraction"]:
+    """(sign, exact square as Fraction) for the 6j. See wigner_3j_exact."""
+
+def exact_to_float(sign: int, square: "Fraction") -> float:
+    """Oracle result -> float, via ln(numerator)-ln(denominator) so squares that over/underflow
+    a double (j beyond ~150) still convert to the nearest representable value."""
 ```
 
 Contracts common to all: pure functions; floats in/floats out; no global state except caches and the
 lgf table; every docstring cites the equation number in this document.
+
+**Domain note (implementation, not accuracy).** The accuracy contract above is unconditional in j.
+Independently of it, the `rydsim.angular` wrappers declare their domain as **j ≤ 150** and raise
+`rydsim.provenance.IntegrityError` beyond it — no physical state in this simulator carries j > 150,
+so a request past the ceiling is a caller bug. `wigner_3j_exact` / `wigner_6j_exact`
+(+ `exact_to_float`) are the explicit opt-in route for deliberate out-of-domain work; the
+`rydsim.wigner` kernels themselves are unrestricted.
 
 ---
 
@@ -597,13 +701,27 @@ both written and cross-checked during spec preparation.
 chain contributes < 1e-12 of this budget. A doc-02 result outside 1% indicates a radial bug, not an
 angular one — B1–B22 isolate the angular layer completely.
 
-Property-based tests (hypothesis or fixed random grid, seed pinned): float-vs-oracle agreement to
-1e-9 on (a) 2000 random **rank-1** 3j (j₂ = 1, j ≤ 150; measured max err 4.2e-12), (b) 2000 random
-6j of type {l j ½; j′ l′ 1} (l ≤ 150; measured 3.0e-13), (c) 3000 random **generic** 3j restricted
-to j ≤ 20 (measured 2.4e-11). Do NOT assert 1e-9 on generic j ≤ 60 grids — measured float error
-reaches 8.2e-5 there (§4.3.4); generic large-j agreement is tested against the oracle at 1e-3 or
-routed exclusively through the oracle. Plus: m→−m symmetry `3j(−m's) = (−1)^(j1+j2+j3)·3j(m's)`;
-column permutation phases; regge/triangle zero checks return exact 0.0.
+Property-based tests (hypothesis or fixed random grid, seed pinned), **against the shipped
+symbols**, which route to the exact path whenever the float sum cannot certify itself (§4.3.4).
+Because the accuracy contract is now a construction bound rather than a grid measurement, the
+grids assert **1e-12** and *print* what they measured:
+
+| grid | assertion | measured (printed by `tests/test_wigner.py`) |
+|---|---|---|
+| stratified **rank-1** 3j sweep (j₂ = 1) to j = 150, incl. the Δj = 0, \|m\| = ½ corner | ≤ 1e-12 | **6.6e-14** |
+| stratified **generic** 3j grid to j = 150, incl. the all-zero-m diagonal and near-equal (j₁,j₂,j₃) | ≤ 1e-12 | **5.4e-14** |
+| stratified **generic** 6j grid | ≤ 1e-12 | **2.9e-14** |
+
+The older 1e-9 random grids — (a) 2000 rank-1 3j (j ≤ 150), (b) 2000 6j of type {l j ½; j′ l′ 1}
+(l ≤ 150; bare-float max err **3.0e-13**, reproduced), (c) 3000 generic 3j at j ≤ 20 — are kept as a
+looser independent check; the withdrawn rank-1 figure 4.2e-12 must not be reinstated in any of them
+(§4.3.4). The former instruction "do NOT assert 1e-9 on generic j ≤ 60 grids" is **superseded**: the
+shipped path now holds 1e-12 there. It still applies to the *bare* float diagnostics
+`wigner_3j_float` / `wigner_6j_float`, which carry no error bound and must only ever be asserted
+*against* their own round-off estimate. Plus: m→−m symmetry
+`3j(−m's) = (−1)^(j1+j2+j3)·3j(m's)`; column permutation phases; regge/triangle zero checks return
+exact 0.0; and the bound gate — every symbol satisfies `|3j| ≤ 1/√(2j_max+1)` (Edmonds 3.7.8) and
+the 6j column bound (6.2.9), a violation raising `IntegrityError` instead of returning.
 
 ---
 
@@ -632,10 +750,19 @@ column permutation phases; regge/triangle zero checks return exact 0.0.
 8. **Signs are convention-relative** (§2.1, §4.3.8). Any consumer doing interference between paths
    must use one consistent convention end-to-end — never mix RydSim reduced elements with external
    tables at amplitude level.
-9. **Large-j numerics:** the rank-1 (≤ 3-term) sums this spec needs are validated to j = 150 at
-   ≤ 4.2e-12 (3j) / ≤ 3.0e-13 (6j). Generic many-term symbols lose precision from alternating-sum
-   cancellation — measured up to 8.2e-5 rel. err at j ≈ 55–70 — and MUST use the exact-rational
-   oracle path if ever needed at high j (§4.3.4).
+9. **Large-j numerics — no longer a limitation of the shipped symbols.** The public 3j/6j are
+   accurate to ≤ 1e-12 relative **by construction at any j and any rank** (§4.3.4): the
+   log-factorial sum runs only where its own round-off estimate certifies it, the exact-rational
+   path runs otherwise, and a value outside the elementary bound raises `IntegrityError` instead of
+   being returned. What remains limited is the **bare** float sum, exposed only as the diagnostics
+   `wigner_3j_float` / `wigner_6j_float`: generic many-term symbols lose precision from
+   alternating-sum cancellation without any bound — `3j(100,90,80;0,0,0)` returns +2.52 against an
+   exact −6.783e-3, wrong in sign and 36× outside `1/√201` — so those functions are for certifying
+   the estimator, never for physics. The withdrawn rank-1 claim of 4.2e-12 (actual bare-float worst
+   case 2.9e-11) is the reason this section is stated as a construction bound rather than a
+   measurement. The residual real limitation is *cost*: the exact path uses big-integer arithmetic,
+   which is why `rydsim.angular` still declares a j ≤ 150 domain (§5) — a policy ceiling, not an
+   accuracy one.
 
 ---
 

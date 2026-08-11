@@ -14,7 +14,21 @@ Deviations found while implementing (reported, not silenced):
     sits 0.17 % below the printed q=0 formula value 2.14875e6 — inside the
     row's 1 % tolerance, so the benchmark is implemented on the q = +-1
     pair mean (odd orders cancel exactly by the E -> -E symmetry).
-  * RS-07-15: strict form is xfail — see the test docstring.
+  * RS-07-15: strict form is xfail — ADJUDICATED as a real model
+    limitation, not a hidden defect: a truncated bound-state sum tends to
+    -S e^2/(m_e omega^2) with S = 0.979, and S SATURATES (it does not
+    approach 1 as the window widens). Both halves are now asserted by
+    test_rs_07_15_trk_saturation_is_real_not_window_truncation instead of
+    living only in the xfail reason string. Spec-side consequence: the
+    RS-07-15 row should be re-stated in its TRK-anchored form.
+  * RS-07-08b: rebased from the n = 29..32 window to n = 28..33 and given
+    the spec 07 §2.6 convergence demonstration. 29..32 cannot hold the
+    33P_1/2 / 33P_3/2 levels that sit energetically between the n=30 and
+    n=31 manifolds, and reported a minimum fan-edge separation 33 % low.
+    The docstring's old claim that the measured 70.5 V/cm sat "right on
+    the Eq. (7.9) formula" was a spurious corroboration: the exact
+    hydrogenic extreme-fan crossing is 67.161 V/cm and F_IT = 70.54 V/cm
+    is that quantity's n >> 1 asymptote (5 % high at n = 30).
   * RS-07-16: the spec's tail note "~5.4/n_max^3 a.u." underestimates the
     bound-series tail (measured ~3.2/n_max^2, i.e. df/dn ~ 1.6/n^3 with
     1/omega^2 ~ 4); irrelevant at n_max = 100 (tail ~ 3e-4 a.u.).
@@ -154,10 +168,35 @@ def map_curv_50s() -> MapCurvature:
 
 
 @pytest.fixture(scope="module")
-def rb_anticross() -> np.ndarray:
-    """Rb 30/31 fan-edge gap vs field, 40 -> 95 V/cm in 0.5 V/cm steps."""
-    mats = build_stark_matrices(StarkBasis("Rb85", 0.5, 29, 32, None))
-    return manifold_gap(mats, 30, 31, np.arange(40e2, 95e2, 50.0))
+def rb_mats_28_33():
+    """Rb Stark matrices, m_j=1/2, n = 28..33, full manifolds.
+
+    28..33 and NOT the narrower 29..32 the fixture originally used: the
+    states that sit energetically BETWEEN the n=30 and n=31 hydrogenic
+    manifolds are 33P_1/2, 33P_3/2 (delta_P = 2.65 -> n* = 30.35) and
+    32D_3/2, 32D_5/2 (delta_D = 1.35 -> n* = 30.65). A window that stops at
+    n=32 omits the two 33P intruders, so the fan-edge separation it reports
+    is not the physical one — manifold_gap's levels_between gate refuses
+    that window (regression test below)."""
+    return build_stark_matrices(StarkBasis("Rb85", 0.5, 28, 33, None))
+
+
+@pytest.fixture(scope="module")
+def rb_anticross(rb_mats_28_33):
+    """Rb 30/31 fan-edge separation, 40 -> 95 V/cm in 0.5 V/cm steps, with
+    the spec 07 §2.6 convergence demonstration (halved step + widened
+    basis) enabled — IntegrityError if either re-run disagrees."""
+    return manifold_gap(rb_mats_28_33, 30, 31, np.arange(40e2, 95e2, 50.0),
+                        conv_check=True)
+
+
+@pytest.fixture(scope="module")
+def h_anticross():
+    """Hydrogen 10/11 fan-edge separation over the same style of sweep,
+    with the convergence demonstration enabled."""
+    mats = build_stark_matrices(StarkBasis("H", 0, 9, 12, None))
+    return manifold_gap(mats, 10, 11, np.arange(1.2e6, 1.8e6, 5e3),
+                        conv_check=True)
 
 
 @pytest.fixture(scope="module")
@@ -395,6 +434,31 @@ def test_rs_07_14_quasi_static_limit(pol_50s, dyn_50s):
         1.0, rel=2e-4)
 
 
+def test_rs_07_15_trk_saturation_is_real_not_window_truncation(dyn_50s):
+    """The XFAIL below rests on a 'measured' TRK saturation; audit review
+    challenged that claim, so it is asserted here rather than asserted in
+    prose. Two independent things have to hold, and they do:
+
+      (a) S(n_window = 15) = 0.9788 < 0.98, the spec 07 §2.7 crossover
+          threshold at which Eq. (7.11) becomes normative; and
+      (b) it is SATURATION, not truncation — widening the window does not
+          push S towards 1. Measured on this implementation:
+          n_window = 10 -> 0.98760, 15 -> 0.97878, 20 -> 0.97663,
+          25 -> 0.97674. S is flat to ~2e-3 from n_window 20 on and moves
+          AWAY from 1, i.e. the missing ~2 % is continuum plus deep-bound
+          oscillator strength that no bound n' window can recover (the same
+          physics RS-07-16 documents for H 1s).
+    """
+    s15 = dyn_50s.trk_completeness
+    assert 0.975 < s15 < 0.980
+    omega = 2 * math.pi * 1e13
+    wide = alpha_dynamic(RB85, 50, 0, 0.5, 0.5, [omega], n_window=25)
+    s25 = wide.trk_completeness
+    assert s25 < 0.98                       # still below the crossover
+    assert abs(s25 - s15) < 5e-3            # saturated, not truncated
+    assert 1.0 - s25 > 0.015                # the deficit does not close
+
+
 @pytest.mark.xfail(
     strict=True,
     reason=(
@@ -405,10 +469,25 @@ def test_rs_07_14_quasi_static_limit(pol_50s, dyn_50s):
         " -S e^2/(m_e omega^2) sits 2.2 % below the ponderomotive limit."
         " Spec 07 §2.7's own crossover rule mandates switching to Eq."
         " (7.11) when S < 0.98. The TRK-ANCHORED form of this benchmark"
-        " passes to 0.1 % (next test)."))
+        " passes to 0.1 % (next test). ADJUDICATED 2026-08-10: this is a"
+        " documented model limitation of a bound-state sum, NOT a hidden"
+        " defect — the saturation reproduces and is pinned by"
+        " test_rs_07_15_trk_saturation_is_real_not_window_truncation;"
+        " strict=True keeps it honest by failing the moment it starts to"
+        " pass."))
 def test_rs_07_15_ponderomotive_strict(dyn_50s):
     """RS-07-15 (strict, as printed): alpha(2pi x 10 THz, Rb 50S) vs
-    -e^2/(m_e omega^2), 2 %."""
+    -e^2/(m_e omega^2), 2 %.
+
+    XFAIL(strict) is the honest state of this benchmark row: the printed
+    tolerance is unachievable by ANY truncated bound-state sum, because the
+    high-frequency limit of Eq. (7.10) is -S e^2/(m_e omega^2) and the
+    discrete S is 0.979, not 1. It is kept (not deleted, not loosened)
+    because the row is a real spec 07 §6 entry and strict=True turns any
+    future change that makes it pass into a failure demanding review.
+    Spec-side consequence reported to the integrator: RS-07-15 should be
+    re-stated in the TRK-anchored form the next test implements.
+    """
     pond = alpha_ponderomotive(2 * math.pi * 1e13)
     # abs=0 is essential: |pond| ~ 7e-36 << pytest.approx default abs=1e-12
     assert float(dyn_50s.alpha_SI[1]) == pytest.approx(pond, rel=0.02, abs=0)
@@ -449,34 +528,189 @@ def test_classical_ionization_field():
         F_ION_35_VCM, rel=0.01)
 
 
+def h_extreme_fan_crossing_Vm(n_lo: int, n_hi: int) -> float:
+    """Exact first-order hydrogen crossing field of the top of the n_lo fan
+    (q = n_lo - 1) with the bottom of the n_hi fan (q = -(n_hi - 1)), m = 0.
+
+    Setting Eq. (7.7) equal for the two extreme states:
+        F = [E_h/2 (1/n_lo^2 - 1/n_hi^2)] /
+            [(3/2) e a0 (n_lo (n_lo - 1) + n_hi (n_hi - 1))]
+    Closed form, exact (Bethe-Salpeter) — an INDEPENDENT oracle for the
+    diagonalization, not an engine output. n = 30/31 -> 67.161 V/cm;
+    n = 10/11 -> 148.74 V/cm. Note this is NOT F_IT = F0/(3 n^5), which is
+    the n >> 1 asymptote of the same quantity and is 5 % high at n = 30.
+    """
+    num = 0.5 * E_H * (1.0 / n_lo**2 - 1.0 / n_hi**2)
+    den = 1.5 * E_CHARGE * A0 * (n_lo * (n_lo - 1) + n_hi * (n_hi - 1))
+    return num / den
+
+
+def test_h_extreme_fan_crossing_closed_form_is_not_f_it():
+    """The closed-form crossing field agrees with the exact Eq. (7.7)
+    generator to machine precision, and is 4.8 % BELOW F_IT(30) — F_IT is
+    the large-n asymptote of the same crossing, not the crossing itself."""
+    for n_lo, n_hi in ((10, 11), (30, 31)):
+        f_x = h_extreme_fan_crossing_Vm(n_lo, n_hi)
+        top = hydrogen_stark_energy_J(n_lo, n_lo - 1, 0, f_x, order=1)
+        bot = hydrogen_stark_energy_J(n_hi, -(n_hi - 1), 0, f_x, order=1)
+        assert top == pytest.approx(bot, rel=1e-13, abs=0)
+    f30 = h_extreme_fan_crossing_Vm(30, 31)
+    assert f30 / 100.0 == pytest.approx(67.161, rel=1e-4)   # V/cm
+    assert f30 / inglis_teller_field_Vm(30) == pytest.approx(0.9521, rel=1e-3)
+
+
 def test_rs_07_08b_first_anticrossing_field(rb_anticross):
     """RS-07-08b: the first n=30/31 fan-edge anticrossing in the Rb map
-    sits within 20 % of 70.5 V/cm (qualitative row). Measured this
-    implementation: 70.5 V/cm — right on the Eq. (7.9) formula. The gap
-    stays strictly positive: alkali fan edges ANTICROSS (core coupling)."""
-    gaps = rb_anticross
-    imin = int(np.argmin(gaps[:, 1]))
-    f_min_vcm = gaps[imin, 0] / 100.0
-    assert abs(f_min_vcm / 70.5 - 1.0) < 0.20
-    assert np.all(gaps[:, 1] > 0.0)
+    sits within 20 % of 70.5 V/cm (qualitative row), and the fan edges
+    ANTICROSS — the separation never reaches zero (core coupling).
+
+    Measured this implementation, n = 28..33, convergence-gated: minimum
+    separation 9.99 GHz at 72.97 V/cm. Two reference fields bracket it and
+    NEITHER is a corroboration of the other: the exact hydrogenic
+    extreme-fan crossing is 67.161 V/cm (closed form above; the module's
+    own hydrogen backend reproduces it, next test), while F_IT = F0/(3n^5)
+    = 70.54 V/cm is that quantity's n >> 1 asymptote and is 5 % high at
+    n = 30. The alkali value sits 8.6 % above the exact hydrogenic crossing
+    because four low-l intruder levels (33P_1/2, 33P_3/2, 32D_3/2,
+    32D_5/2) lie between the two fans and push the edges apart.
+    """
+    res = rb_anticross
+    assert res.converged                       # both re-runs agreed
+    assert res.tracking_ok
+    assert not res.crosses                     # ANTICROSS: no sign change
+    assert np.all(res.gap_J > 0.0)
+    assert res.min_gap_J > 0.0
+    assert res.levels_between == 4             # 33P1/2, 33P3/2, 32D3/2, 32D5/2
+    assert abs(res.min_field_Vm / 100.0 / 70.5 - 1.0) < 0.20
+    # the minimum is a genuine avoided crossing: percent-level of the
+    # manifold spacing, not a numerical zero
+    assert res.min_gap_J / res.manifold_spacing_J > 0.01
 
 
-def test_hydrogen_states_genuinely_cross(rb_anticross):
-    """Spec 07 §2.6 core-effect regression: hydrogen fan edges CROSS
-    (character gap changes sign through zero) where alkali edges anticross
-    with a finite gap; the H crossing sits near F_IT(10) (the Eq. 7.9
-    formula is the n >> 1 asymptote — 20 % window)."""
-    mats = build_stark_matrices(StarkBasis("H", 0, 9, 12, None))
-    rows = manifold_gap(mats, 10, 11, np.arange(1.2e6, 1.8e6, 5e3))
-    signs = np.sign(rows[:, 1])
-    assert np.any(signs > 0) and np.any(signs < 0)    # genuine crossing
-    i_cross = int(np.where(np.diff(signs) != 0)[0][0])
-    f_cross = rows[i_cross, 0]
-    assert abs(f_cross / inglis_teller_field_Vm(10) - 1.0) < 0.20
-    # smallest sampled |gap| at the crossing is far below the Rb avoided gap
-    h_min = float(np.min(np.abs(rows[:, 1])))
-    rb_min = float(np.min(rb_anticross[:, 1]))
-    assert h_min < rb_min
+def test_rs_07_08b_convergence_record_is_data(rb_anticross):
+    """Audit §4 item 6: the convergence demonstration ships as measured
+    numbers, not as a bare boolean. Both re-runs must reproduce the verdict
+    and the level count, and the movements must be the small ones the
+    tolerances were set from (halved step: exact to <1 Hz because the
+    refined minimum is grid-free; widened basis n +- 1: 0.28 % in gap,
+    0.02 % in field)."""
+    rec = rb_anticross.convergence
+    for name in ("step_halved", "basis_wide"):
+        run = rec[name]
+        assert run["crosses"] is False
+        assert run["levels_between"] == rb_anticross.levels_between
+        assert run["tracking_ok"]
+        assert run["d_gap_hz"] < rec["tol_gap_J"] / H
+        assert run["d_field_rel"] < rec["tol_field_rel"]
+    assert rec["step_halved"]["d_gap_hz"] < 1.0
+    assert rec["basis_wide"]["d_gap_hz"] / (rb_anticross.min_gap_J / H) < 0.01
+    assert rec["basis_wide"]["n_min"] == 27
+    assert rec["basis_wide"]["n_max"] == 34
+
+
+def test_manifold_gap_refuses_a_step_that_would_invert_the_verdict(
+        rb_mats_28_33):
+    """REGRESSION (audit: 'silently inverts its physics conclusion under a
+    coarser field step'). The old implementation followed the two edges
+    with two INDEPENDENT argmax overlaps and no bisection: at 2.50 V/cm it
+    reported a minimum gap of -11688 MHz with the gaps CHANGING SIGN, i.e.
+    the hydrogen-like 'edges cross' conclusion, while 0.50/0.25/0.10 V/cm
+    all gave a positive gap. No flag distinguished the two.
+
+    With the joint 2-state assignment plus adaptive bisection, a 2.50 V/cm
+    step now reproduces the converged answer instead of inverting it, and a
+    step coarse enough to defeat the bisection budget REFUSES rather than
+    reporting either verdict."""
+    fine = manifold_gap(rb_mats_28_33, 30, 31,
+                        np.arange(40e2, 95e2, 50.0), conv_check=False)
+    coarse = manifold_gap(rb_mats_28_33, 30, 31,
+                          np.arange(40e2, 95e2, 250.0), conv_check=False)
+    assert not coarse.crosses                       # verdict no longer flips
+    assert np.all(coarse.gap_J > 0.0)
+    assert coarse.min_gap_J / fine.min_gap_J == pytest.approx(1.0, rel=1e-3)
+    assert coarse.min_field_Vm / fine.min_field_Vm == pytest.approx(1.0,
+                                                                    rel=1e-3)
+    assert coarse.bisections > 0                    # bisection did the work
+    with pytest.raises(IntegrityError, match="tracking is ambiguous"):
+        manifold_gap(rb_mats_28_33, 30, 31, np.arange(40e2, 95e2, 500.0),
+                     conv_check=False)
+
+
+def test_manifold_gap_refuses_a_basis_that_omits_the_intruders():
+    """REGRESSION: the original RS-07-08b fixture used n = 29..32, which
+    cannot hold the 33P_1/2 / 33P_3/2 levels that sit between the n=30 and
+    n=31 manifolds (delta_P = 2.65 => n* = 30.35). It therefore found only
+    2 levels between the fan edges instead of 4, and a minimum separation
+    33 % low (7522 vs 9990 MHz) at a 3.6 % different field. The basis
+    widening gate now refuses that window by name.
+
+    The premise is checked INDEPENDENTLY of the Stark machinery, straight
+    from the spec 01 quantum defects: the four intruders all have
+    30 < n* < 31, so they must lie between the two hydrogenic manifolds
+    whatever the diagonalization says."""
+    intruders = [(33, 1, 0.5), (33, 1, 1.5), (32, 2, 1.5), (32, 2, 2.5)]
+    for st in intruders:
+        assert 30.0 < float(n_star(RB85, *st)) < 31.0, st
+    mats = build_stark_matrices(StarkBasis("Rb85", 0.5, 29, 32, None))
+    assert (33, 1, 0.5) not in mats.labels       # cannot represent them
+    narrow = manifold_gap(mats, 30, 31, np.arange(40e2, 95e2, 50.0),
+                          conv_check=False)
+    assert narrow.levels_between == 2            # the 33P pair is missing
+    with pytest.raises(IntegrityError, match="levels between"):
+        manifold_gap(mats, 30, 31, np.arange(40e2, 95e2, 50.0),
+                     conv_check=True)
+
+
+def test_manifold_gap_refuses_an_unbracketed_sweep(rb_mats_28_33):
+    """The crossing must be bracketed by the sweep: starting above it (the
+    fans already overlap) or stopping before it (minimum at an endpoint)
+    are both refusals, not results."""
+    with pytest.raises(IntegrityError, match="already overlap"):
+        manifold_gap(rb_mats_28_33, 30, 31, np.arange(80e2, 95e2, 50.0),
+                     conv_check=False)
+    with pytest.raises(IntegrityError, match="sweep endpoint"):
+        manifold_gap(rb_mats_28_33, 30, 31, np.arange(40e2, 60e2, 50.0),
+                     conv_check=False)
+
+
+def test_hydrogen_states_genuinely_cross(rb_anticross, h_anticross):
+    """Spec 07 §2.6 core-effect regression: hydrogen fan edges CROSS where
+    alkali edges anticross with a finite core-induced gap.
+
+    Made quantitative and dimensionless (the old form compared a hydrogen
+    n=10/11 gap against a rubidium n=30/31 gap in absolute Hz, which is
+    not a like-for-like comparison): normalised by each system's own
+    manifold spacing, the hydrogen closest approach is < 1e-6 — a numerical
+    zero, as parabolic separability requires — while the rubidium one is
+    > 1 % . The crossing FIELD is checked against the exact closed form
+    (independent oracle), not against F_IT."""
+    h = h_anticross
+    assert h.converged and h.tracking_ok
+    assert h.crosses                                     # sign change
+    assert np.any(h.gap_tracked_J < 0.0)
+    f_exact = h_extreme_fan_crossing_Vm(10, 11)
+    assert h.min_field_Vm / f_exact == pytest.approx(1.0, rel=0.01)
+    h_rel = h.min_gap_J / h.manifold_spacing_J
+    rb_rel = rb_anticross.min_gap_J / rb_anticross.manifold_spacing_J
+    assert h_rel < 1e-6
+    assert rb_rel > 1e-2
+    assert h_rel < 1e-4 * rb_rel
+
+
+def test_hydrogen_backend_reproduces_the_exact_30_31_crossing():
+    """Cross-method: the module's exact-Gordon hydrogen backend, run on the
+    SAME n = 28..33 window and field sweep as the Rb benchmark, puts the
+    n=30/31 extreme-fan crossing at the closed-form 67.161 V/cm (1 %) with
+    a vanishing gap — so the 8.6 % offset of the Rb minimum is core
+    physics, not a basis or step artifact, and the Rb number's proximity to
+    F_IT = 70.54 V/cm is a coincidence of two independent offsets."""
+    mats = build_stark_matrices(StarkBasis("H", 0, 28, 33, None))
+    res = manifold_gap(mats, 30, 31, np.arange(40e2, 95e2, 50.0),
+                       conv_check=False)
+    assert res.crosses
+    f_exact = h_extreme_fan_crossing_Vm(30, 31)
+    assert res.min_field_Vm / f_exact == pytest.approx(1.0, rel=0.01)
+    assert res.min_gap_J / res.manifold_spacing_J < 1e-6
 
 
 # ---------------------------------------------------------------------------
@@ -495,6 +729,42 @@ def test_rs_07_09_pert_vs_map_curvature(pol_50s, map_curv_50s):
     assert map_curv_50s.fit_max_field_Vm <= 0.03 * inglis_teller_field_Vm(50)
     # gamma is DIAGNOSTIC only (audit §3 item 29) — present, never a finding
     assert math.isfinite(map_curv_50s.gamma_SI_diagnostic)
+
+
+def test_map_convergence_gate_is_relative_to_the_field_induced_shift(
+        map_curv_50s, pol_50s):
+    """REGRESSION (audit): the basis-convergence gate used to be a flat
+    absolute 100 kHz on the TOTAL eigenvalue, while the physically relevant
+    quantity is the field-induced shift — and alpha_map_curvature runs the
+    check at F_fit = min(0.03 F_IT, 0.1 E_mix) where that shift is small
+    and falls as n^-3. For this exact configuration (Rb 50S1/2, RS-07-09)
+    the whole shift is 683 kHz, so 100 kHz was 14.6 % of it while the
+    benchmark consuming the flag asserts 0.5 %; by n = 70 the gate exceeds
+    40 % of the shift.
+
+    The gate is now min(absolute ceiling, max(1e-3 x shift, 1 Hz)) and the
+    three numbers ship as data (audit §4 item 6). Independent check on the
+    recorded shift: it must equal the quadratic Stark shift built from the
+    PERTURBATIVE alpha, -(1/2) alpha F^2 / h, which comes from a different
+    code path (sum over states, not diagonalization)."""
+    mc = map_curv_50s
+    assert math.isfinite(mc.conv_move_hz)
+    assert math.isfinite(mc.conv_shift_hz)
+    assert math.isfinite(mc.conv_tol_hz)
+    # the old absolute 100 kHz default was a double-digit FRACTION of the
+    # entire shift at this operating point — a statement about the physics,
+    # independent of how the new gate is coded
+    assert 1e5 / mc.conv_shift_hz > 0.10
+    # the applied tolerance is far tighter than that absolute default
+    assert mc.conv_tol_hz < 1e-2 * 1e5
+    assert mc.conv_tol_hz == pytest.approx(1e-3 * mc.conv_shift_hz, rel=1e-12)
+    assert mc.conv_move_hz < mc.conv_tol_hz              # and it passes
+    # independent: the recorded shift is the quadratic shift of Eq. (7.1)
+    shift_pert = abs(0.5 * pol_50s.alpha_SI * mc.fit_max_field_Vm**2) / H
+    assert mc.conv_shift_hz == pytest.approx(shift_pert, rel=5e-3)
+    # cross-path identity: the map's E_mix (Stark-matrix row) equals the
+    # perturbative E_mix (partner sum) — same elements, different assembly
+    assert mc.e_mix_Vm == pytest.approx(pol_50s.E_mix_Vm, rel=1e-9)
 
 
 def test_map_unit_tripwire(map_curv_50s):
@@ -569,6 +839,38 @@ def test_refuse_resonant_omega():
     with pytest.raises(ResonanceError):
         alpha_dynamic(RB85, 50, 0, 0.5, 0.5, [w_res + 1e3], n_window=3)
     assert issubclass(ResonanceError, IntegrityError)
+
+
+def test_alpha_dynamic_enforces_the_same_quasi_degeneracy_gate():
+    """REGRESSION (audit §3 item 25). alpha_dynamic used to call only
+    _validate_target and the resonance guard, so the E_mix < 50 V/m
+    refusal that alpha_perturbative enforces was missing entirely: Rb-85
+    39F_7/2 m_j=1/2 (E_mix = 48.1 V/m) raised DegeneracyError from the
+    static entry point and returned 1.1798e13 a.u. from the dynamic one —
+    numerically the SAME invalid second-order sum, since alpha(omega->0)
+    reproduces it. The whole Rb nF_7/2 series n = 39..44 is affected
+    (E_mix = 48.1, 42.3, 37.4, 33.2, 29.5, 26.3 V/m).
+
+    Both entry points now go through the same helper, so they cannot drift
+    apart: the static one raising and the dynamic one raising are asserted
+    on the identical state, and a healthy state carries E_mix_Vm on the
+    dynamic result object (spec 07 §4.1: the cap ships with the result).
+    """
+    quasi = (RB85, 39, 3, 3.5, 0.5)
+    with pytest.raises(DegeneracyError, match="E_mix"):
+        alpha_perturbative(*quasi)
+    with pytest.raises(DegeneracyError, match="E_mix"):
+        alpha_dynamic(*quasi, [2 * math.pi * 1e6])
+    with pytest.raises(DegeneracyError, match="E_mix"):
+        alpha_dynamic(*quasi, [0.0])          # omega = 0 is the same sum
+
+
+def test_dynamic_result_carries_e_mix(dyn_50s, pol_50s):
+    """Spec 07 §4.1: the validity cap travels with the result. The dynamic
+    and static entry points share the partner set, so they must report the
+    SAME E_mix (a zero-field property of the denominators)."""
+    assert dyn_50s.E_mix_Vm == pytest.approx(pol_50s.E_mix_Vm, rel=1e-12)
+    assert dyn_50s.E_mix_Vm > 50.0
 
 
 def test_stark_shift_validity_cap(pol_50s):

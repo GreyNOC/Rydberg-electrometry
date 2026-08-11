@@ -13,21 +13,32 @@ scope (see test_e7_conditions_exceed_linear_fence for the documented fence
 behaviour at the E7 field scale).
 """
 
+import math
 from fractions import Fraction
 
 import numpy as np
 import pytest
+import scipy.constants as sc
+from scipy.integrate import quad
+from scipy.special import genlaguerre, lpmv
 
 from rydsim.constants import H, MU_B
 from rydsim.provenance import IntegrityError
 from rydsim.zeeman import (
+    DIAMAGNETIC_FENCE_FRACTION,
+    DIAMAGNETIC_HZ_PER_T2_A0SQ,
     GAUSS_TO_TESLA,
     LINEAR_FENCE_FRACTION,
     MU_B_OVER_H_HZ_PER_T,
     ZeemanState,
+    diamagnetic_shift_hz,
     gauss_to_tesla,
     hz_per_t_to_mhz_per_gauss,
     lande_g_j,
+    mean_cos2_theta,
+    mean_rho2_a0sq,
+    mean_sin2_theta,
+    require_linear_dominates,
     require_linear_regime,
     state_shift_hz,
     stretched_pair,
@@ -224,6 +235,203 @@ def test_e7_conditions_exceed_linear_fence():
     st = ZeemanState(2, 2.5, 2.5)
     with pytest.raises(IntegrityError):
         state_shift_hz(st, gauss_to_tesla(60.0), fs_interval_hz=5e9)
+
+
+# ---------------------------------------------------------------------------
+# Diamagnetic channel — the term that actually breaks the linear law for
+# Rydberg states (audit 2026-08-10: the fine-structure fence is not the
+# binding condition, and for l = 0 it cannot be armed at all).
+#
+# Every ingredient below is checked against an INDEPENDENT computation:
+# the angular factor against numerical integration of |Y_lm|^2, the radial
+# factor against numerical integration of the exact hydrogen radial function,
+# and the SI prefactor against the atomic-unit route through scipy's
+# "atomic unit of mag. flux density".
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("l", [0, 1, 2, 3, 4])
+def test_mean_cos2_theta_vs_numerical_integration(l):
+    """<l m|cos^2 theta|l m> from the closed form equals the integral of
+    |Y_lm(theta,phi)|^2 cos^2(theta) over the sphere, for every m.
+
+    |Y_lm|^2 is built from the associated Legendre function directly
+    (scipy.special.lpmv) and normalised by its own integral, so the check
+    depends on nothing but the definition of Y_lm.
+    """
+    for m in range(-l, l + 1):
+        def weight(th, l=l, m=m):
+            return lpmv(abs(m), l, math.cos(th)) ** 2 * math.sin(th)
+        norm, _ = quad(weight, 0.0, math.pi, epsabs=1e-14)
+        num, _ = quad(lambda th: weight(th) * math.cos(th) ** 2,
+                      0.0, math.pi, epsabs=1e-14)
+        assert mean_cos2_theta(l, m) == pytest.approx(num / norm, rel=1e-10)
+    # exact sum rule: sum_m <cos^2> = (2l+1)/3 (isotropy of a filled shell)
+    total = sum(mean_cos2_theta(l, m) for m in range(-l, l + 1))
+    assert total == pytest.approx((2 * l + 1) / 3, rel=1e-13)
+
+
+def test_mean_sin2_theta_fine_structure_values():
+    """<sin^2 theta> in |l j m_j>: l = 0 is isotropic (2/3); a stretched
+    m_j = j = l+1/2 state is pure |m_l = l, m_s = +1/2>, so it must equal the
+    pure-m_l value 1 - 1/(2l+3); and the (2j+1) states of a j-manifold must
+    average to the isotropic 2/3 (closure over m_j)."""
+    assert mean_sin2_theta(0, 0.5, 0.5) == pytest.approx(2 / 3, rel=1e-13)
+    for l in (1, 2, 3):
+        j = l + 0.5
+        assert mean_sin2_theta(l, j, j) == pytest.approx(
+            1.0 - 1.0 / (2 * l + 3), rel=1e-12)
+    for (l, j) in [(1, 0.5), (1, 1.5), (2, 1.5), (2, 2.5), (3, 3.5)]:
+        tj = round(2 * j)
+        avg = sum(mean_sin2_theta(l, j, tm / 2)
+                  for tm in range(-tj, tj + 1, 2)) / (tj + 1)
+        assert avg == pytest.approx(2 / 3, rel=1e-12), (l, j)
+
+
+@pytest.mark.parametrize("n,l", [(1, 0), (2, 1), (5, 2), (10, 3), (20, 0)])
+def test_hydrogenic_r2_vs_numerical_integration(n, l):
+    """<r^2> = (n^2/2)[5n^2 + 1 - 3l(l+1)] a0^2 checked by integrating the
+    exact hydrogen radial function R_nl (associated Laguerre form).
+
+    This is the check that matters: the n^2 prefactor (not n^4) is the
+    difference between a 1.5 % and a 27x diamagnetic/linear ratio at 60 G.
+    """
+    r = np.linspace(1e-9, 60.0 * n * n, 2_000_001)
+    rho = 2.0 * r / n
+    R = np.exp(-rho / 2.0) * rho**l * genlaguerre(n - l - 1, 2 * l + 1)(rho)
+    w = R * R * r * r
+    numeric = float(np.trapezoid(w * r * r, r) / np.trapezoid(w, r))
+    analytic = 0.5 * n**2 * (5 * n**2 + 1 - 3 * l * (l + 1))
+    assert numeric == pytest.approx(analytic, rel=1e-9)
+    # and mean_rho2_a0sq must be that radial value times the angular one
+    j = l + 0.5
+    assert mean_rho2_a0sq(n, l, j, j) == pytest.approx(
+        analytic * mean_sin2_theta(l, j, j), rel=1e-12)
+
+
+def test_diamagnetic_prefactor_vs_atomic_units():
+    """e^2 a0^2/(8 m_e h) assembled from CODATA equals the atomic-unit route
+    (1/8)(B/B_au)^2 <rho^2> E_h/h with B_au = scipy's atomic unit of magnetic
+    flux density — a different constant chain reaching the same number."""
+    b_au = sc.physical_constants["atomic unit of mag. flux density"][0]
+    e_h_over_h = sc.physical_constants["Hartree energy"][0] / sc.h
+    rho2 = mean_rho2_a0sq(42.5, 2, 2.5, 2.5)
+    for b in (1e-4, 6e-3, 4.12e-2):
+        si = DIAMAGNETIC_HZ_PER_T2_A0SQ * rho2 * b * b
+        au = 0.125 * (b / b_au) ** 2 * rho2 * e_h_over_h
+        assert si == pytest.approx(au, rel=1e-11)
+        assert diamagnetic_shift_hz(42.5, 2, 2.5, 2.5, b) == pytest.approx(si, rel=1e-14)
+
+
+def test_diamagnetic_scaling_laws():
+    """The reason it is the binding term: quartic in n* (asymptotically) and
+    quadratic in B, against a linear, n-independent Zeeman shift."""
+    b = gauss_to_tesla(50.0)
+    d1 = diamagnetic_shift_hz(40.0, 2, 2.5, 2.5, b)
+    d2 = diamagnetic_shift_hz(80.0, 2, 2.5, 2.5, b)
+    assert d2 / d1 == pytest.approx(16.0, rel=2e-3)     # ~n*^4
+    assert diamagnetic_shift_hz(40.0, 2, 2.5, 2.5, 2 * b) / d1 == pytest.approx(
+        4.0, rel=1e-12)                                  # exactly B^2
+    assert diamagnetic_shift_hz(40.0, 2, 2.5, 2.5, -b) == pytest.approx(d1, rel=1e-14)
+
+
+@pytest.mark.parametrize("n_star,l,j,gauss,expected_ratio", [
+    (42.5, 2, 2.5, 60.0, 0.014843529356),   # Cs-like nD5/2 stretched, E7 field
+    (42.5, 2, 2.5, 412.0, 0.101925568242),  # top of the E7 field range
+    (44.9, 0, 0.5, 60.0, 0.043231962746),   # l = 0: FS fence unarmable here
+    (44.9, 0, 0.5, 412.0, 0.296859477521),
+])
+def test_neglected_over_returned_ratio_is_10_to_30_percent(
+        n_star, l, j, gauss, expected_ratio):
+    """Reproducible statement of the defect: over the module's own E7 field
+    range the NEGLECTED diamagnetic term is 1.5-30 % of the shift the module
+    RETURNS, while a 5 GHz fine-structure interval trips the j-mixing fence
+    only above ~60 G and not at all for l = 0."""
+    st = ZeemanState(l, j, j)
+    b = gauss_to_tesla(gauss)
+    lin = abs(MU_B_OVER_H_HZ_PER_T * st.g_j * st.m_j * b)
+    dia = diamagnetic_shift_hz(n_star, l, j, j, b)
+    assert dia / lin == pytest.approx(expected_ratio, rel=1e-8)
+
+
+def test_diamagnetic_fence_raises_where_the_fs_fence_passes():
+    """The point of the fix: a state that sails through the fine-structure
+    fence is refused by the diamagnetic one, because that is the term that
+    actually breaks the linear law."""
+    st = ZeemanState(2, 2.5, 2.5)
+    b = gauss_to_tesla(300.0)
+    # generous 100 GHz interval -> j-mixing fence passes comfortably
+    state_shift_hz(st, b, fs_interval_hz=1e11)
+    # ... but the neglected diamagnetic term is 7.4 % of the returned shift
+    with pytest.raises(IntegrityError, match="diamagnetic"):
+        state_shift_hz(st, b, n_star=42.5)
+
+
+def test_diamagnetic_fence_is_armable_for_l_zero():
+    """The gap the fine-structure fence structurally cannot cover: an S1/2
+    state has no same-l j-partner, so channel 1 has no interval to test. The
+    diamagnetic channel arms fine and refuses at 412 G (29.7 % neglected)."""
+    st = ZeemanState(0, 0.5, 0.5)
+    state_shift_hz(st, gauss_to_tesla(412.0))                    # unfenced: allowed
+    with pytest.raises(IntegrityError, match="diamagnetic"):
+        state_shift_hz(st, gauss_to_tesla(412.0), n_star=44.9)
+
+
+def test_diamagnetic_fence_passes_in_the_regime_it_should():
+    """Not an over-strict gate: at low field / low n the linear law is
+    genuinely dominant and the fence must stay out of the way."""
+    st = ZeemanState(2, 2.5, 2.5)
+    for gauss in (0.0, 1.0, 10.0, 100.0):
+        state_shift_hz(st, gauss_to_tesla(gauss), n_star=42.5)
+    # a low-n (non-Rydberg) state is unaffected even at 412 G
+    state_shift_hz(st, gauss_to_tesla(412.0), n_star=6.0)
+    # ... and the crossing sits where the arithmetic says it does (202 G)
+    st_ok = state_shift_hz(st, gauss_to_tesla(200.0), n_star=42.5)
+    assert abs(st_ok) > 0.0
+    with pytest.raises(IntegrityError):
+        state_shift_hz(st, gauss_to_tesla(205.0), n_star=42.5)
+
+
+def test_diamagnetic_fence_vector_b_uses_worst_case():
+    st = ZeemanState(2, 2.5, 2.5)
+    bt = gauss_to_tesla(np.array([1.0, 10.0, 400.0]))
+    with pytest.raises(IntegrityError, match="diamagnetic"):
+        state_shift_hz(st, bt, n_star=42.5)
+    ok = state_shift_hz(st, gauss_to_tesla(np.array([1.0, 10.0, 100.0])), n_star=42.5)
+    assert ok.shape == (3,)
+
+
+def test_diamagnetic_fence_on_transitions_is_per_state():
+    """The two levels have different l and n*, so their diamagnetic shifts do
+    not cancel in the difference; each state is fenced against its own n*."""
+    a = ZeemanState(2, 2.5, 2.5)   # nD5/2
+    b = ZeemanState(1, 1.5, 1.5)   # n'P3/2
+    bt = gauss_to_tesla(300.0)
+    transition_shift_hz(a, b, bt)  # unfenced: allowed
+    with pytest.raises(IntegrityError, match="diamagnetic"):
+        transition_shift_hz(a, b, bt, n_star_from=42.5)
+    with pytest.raises(IntegrityError, match="diamagnetic"):
+        transition_shift_hz(a, b, bt, n_star_to=43.7)
+
+
+def test_diamagnetic_refuses_unbound_n_star():
+    """Refuse-to-guess: n* <= l is not a bound orbital; never return a number
+    for a state that does not exist."""
+    for bad in (2.0, 1.5, 0.0, -3.0, float("nan"), float("inf")):
+        with pytest.raises(IntegrityError):
+            mean_rho2_a0sq(bad, 2, 2.5, 2.5)
+    with pytest.raises(IntegrityError):
+        diamagnetic_shift_hz(1.9, 2, 2.5, 2.5, 1e-3)
+
+
+def test_require_linear_dominates_direct():
+    st = ZeemanState(2, 2.5, 2.5)
+    require_linear_dominates(st, 42.5, gauss_to_tesla(100.0))
+    with pytest.raises(IntegrityError):
+        require_linear_dominates(st, 42.5, gauss_to_tesla(400.0))
+    # tolerance is a parameter, and tightening it tightens the fence
+    with pytest.raises(IntegrityError):
+        require_linear_dominates(st, 42.5, gauss_to_tesla(100.0), max_fraction=0.01)
+    assert DIAMAGNETIC_FENCE_FRACTION == LINEAR_FENCE_FRACTION == 0.05
 
 
 # ---------------------------------------------------------------------------

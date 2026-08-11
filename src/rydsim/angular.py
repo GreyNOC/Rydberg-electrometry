@@ -19,12 +19,26 @@ Conventions (normative, docs/spec/00-conventions.md lock #9 + spec 03 SS2.1):
 * All frequencies angular [rad/s] (spec 00 lock #2).
 
 Float-path certification (spec 03 SS4.3.4, integrity audit R24 / refusal #13):
-the log-factorial 3j/6j path is certified only for the rank-1 symbols of the
-dipole chain, and only up to j = 150 (measured max rel. err 4.2e-12 for 3j,
-3.0e-13 for the {l j 1/2; j' l' 1} 6j). Every public function here guards its
-angular momenta at j <= 150 and raises ``rydsim.provenance.IntegrityError``
-beyond it rather than returning an uncertified number (route such requests
-through the exact-rational oracle in tests/, or refuse).
+``rydsim.wigner`` no longer ships a bare log-factorial sum — it evaluates the
+Racah sum together with its own round-off estimate and falls back to an
+**exact-rational** evaluation whenever that estimate exceeds 1e-12, so every
+3j/6j is accurate to 1e-12 relative by construction, at any j and any rank
+(``rydsim.wigner`` module docstring). Measured against the exact-rational
+oracle by tests/test_wigner.py, which prints the figures rather than
+transcribing them: worst 6.6e-14 over the stratified rank-1 sweep to j = 150
+(including the Delta j = 0, |m| = 1/2 corner where the bare float path is
+2.9e-11), 5.4e-14 over the generic 3j grid and 2.9e-14 over the generic 6j
+grid — grids on which the bare float path returned values up to 372x outside
+the elementary |3j| bound. Refusal #13's "route to the exact-rational oracle"
+is therefore taken automatically; :func:`wigner_3j_exact` /
+:func:`wigner_6j_exact` expose that route directly.
+
+Independently of accuracy, every public function here — including the
+:func:`wigner_3j` / :func:`wigner_6j` wrappers — guards its angular momenta at
+j <= 150 (:data:`_J_FLOAT_CERT_MAX`) and raises
+``rydsim.provenance.IntegrityError`` beyond it: no physical state in this
+simulator carries j > 150, so a request past the ceiling is a caller bug, and
+the exact oracle is the explicit opt-in route for it.
 
 Sources for the numeric contracts baked into docstrings/tests:
 - D. A. Steck, Rb-87/Rb-85/Cs D-line data, rev 2.3.4 (8 Aug 2025)  [VERIFIED,
@@ -46,12 +60,17 @@ import numpy as np
 
 from .constants import A0, C, E_CHARGE, EPS0, HBAR, M_E
 from .provenance import IntegrityError
-from .wigner import wigner_3j, wigner_6j
+from .wigner import wigner_3j as _w3j_kernel
+from .wigner import wigner_6j as _w6j_kernel
+from .wigner import wigner_3j_exact, wigner_6j_exact, exact_to_float
 
 __all__ = [
     "FineState",
     "wigner_3j",
     "wigner_6j",
+    "wigner_3j_exact",
+    "wigner_6j_exact",
+    "exact_to_float",
     "reduced_C1",
     "reduced_dipole_j",
     "angular_factor",
@@ -105,8 +124,34 @@ def _require_certified(context: str, **js: float) -> None:
             raise IntegrityError(
                 f"{context}: {name}={j} exceeds the certified float-path range "
                 f"j <= {_J_FLOAT_CERT_MAX:g} (spec 03 SS4.3.4 / audit refusal "
-                "#13) — use the exact-rational oracle path"
+                "#13) — route through the exact-rational oracle "
+                "rydsim.angular.wigner_3j_exact / wigner_6j_exact "
+                "(+ exact_to_float), which is exact at any j"
             )
+
+
+def wigner_3j(j1: float, j2: float, j3: float,
+              m1: float, m2: float, m3: float) -> float:
+    """Certified 3j: :func:`rydsim.wigner.wigner_3j` behind the j <= 150 gate.
+
+    The spec 03 SS5 public entry point. The kernel is accurate to 1e-12
+    relative at any j (it routes to the exact-rational path when the float sum
+    cannot certify itself, and refuses any value outside the elementary
+    ``|3j| <= 1/sqrt(2 j_max + 1)`` bound), but this module's declared domain
+    stops at j = 150 — beyond it callers must ask for
+    :func:`wigner_3j_exact` explicitly rather than receive a number the
+    module docstring does not cover. Audit refusal #13 / spec 03 SS4.3.4.
+    """
+    _require_certified("wigner_3j", j1=j1, j2=j2, j3=j3)
+    return _w3j_kernel(j1, j2, j3, m1, m2, m3)
+
+
+def wigner_6j(j1: float, j2: float, j3: float,
+              j4: float, j5: float, j6: float) -> float:
+    """Certified 6j: :func:`rydsim.wigner.wigner_6j` behind the j <= 150 gate.
+    See :func:`wigner_3j`."""
+    _require_certified("wigner_6j", j1=j1, j2=j2, j3=j3, j4=j4, j5=j5, j6=j6)
+    return _w6j_kernel(j1, j2, j3, j4, j5, j6)
 
 
 @dataclass(frozen=True, slots=True)
@@ -261,14 +306,32 @@ def effective_rf_dipole(l: int, j: float, lp: int, jp: float,
     """NIST-convention effective RF dipole |p| = e*a0*|R|*|A| in C*m.
 
     Spec 03 SS2.5 / spec 00 lock #11: co-linear pi geometry, m_j = +-1/2,
-    p = e a0 R |A(l, j, mj -> l', j', mj + q; q)|. Defaults (mj = 1/2, q = 0)
-    reproduce the Simons/Gordon/Holloway JAP 120, 123103 (2016) A factors
-    (sqrt(2)/3, sqrt(6)/5, 2 sqrt(3)/7). Raises IntegrityError for an
-    E1-forbidden pair rather than returning a 0 dipole that would silently
-    invert to an infinite field (non-collinear/elliptical RF needs the
-    coherent multi-q sum of SS2.3, never a single p).
+    p = e a0 R |A| for the drive ``(l, j, mj) --q--> (l', j', mj + q)``.
+    Defaults (mj = 1/2, q = 0) reproduce the Simons/Gordon/Holloway JAP 120,
+    123103 (2016) A factors (sqrt(2)/3, sqrt(6)/5, 2 sqrt(3)/7).
+
+    Polarization bookkeeping (this is the sign trap): :func:`angular_factor`
+    evaluates ``<bra|e r_q|ket>`` through the 3j ``(j 1 j'; -m_bra q m_ket)``,
+    which enforces ``m_bra = m_ket + q``. The state being *driven into* is
+    therefore the BRA, so the element is
+    ``angular_factor(l', j', mj + q, l, j, mj, q)`` — not
+    ``angular_factor(l, j, mj, l', j', mj + q, q)``, which imposes the
+    opposite sign and makes every q = +-1 element vanish identically. The
+    magnitude is polarization-symmetric, |<a|e r_q|b>| = |<b|e r_-q|a>|, so
+    this agrees with ``rydsim.dipoles._rf_angular``'s stretched-convention
+    call ``angular_factor(l, j, j, l', j', j', j - j')`` on the same pair.
+
+    Lock #11 fixes (mj, q) = (+-1/2, 0); any other (mj, q) is a documented
+    deviation the caller owns — legitimate for the stretched convention
+    (``mj = j``, ``q = j' - j``) and for assembling the coherent multi-q sum
+    that SS2.3 requires for non-collinear/elliptical RF, but it is NOT the
+    normative single-scalar wp and must be stamped as such downstream
+    (``rydsim.dipoles.mu_rf`` carries the convention field for that).
+
+    Raises IntegrityError for an E1-forbidden pair rather than returning a 0
+    dipole that would silently invert to an infinite field.
     """
-    A = angular_factor(l, j, mj, lp, jp, mj + q, q)
+    A = angular_factor(lp, jp, mj + q, l, j, mj, q)
     if A == 0.0:
         raise IntegrityError(
             f"effective_rf_dipole: transition (l={l}, j={j}, mj={mj}) -> "
@@ -326,17 +389,28 @@ def einstein_A(omega0, d_reduced_racah_Cm, j_upper: float):
     return out.item() if out.ndim == 0 else out
 
 
-def oscillator_strength(omega, d_reduced_racah_Cm, j_lower: float):
-    """Absorption oscillator strength f (dimensionless), Eq. (2.17).
+def oscillator_strength(omega, d_reduced_racah_Cm, j_initial: float):
+    """Oscillator strength f_(i->f) (dimensionless), Eq. (2.17).
 
-    f = (2 m_e omega) / (3 hbar (2j+1)) * |<j||er||j'>_Racah|^2 / e^2, with j
-    the LOWER-state label; omega = (E_f - E_i)/hbar in rad/s (> 0 absorption,
-    emission enters negative through the sign of omega). d in C*m. Vectorized
-    over omega / d.
+    ``f_(i->f) = 2 m_e omega_fi |<i||er||f>_Racah|^2 / (3 hbar e^2 (2 j_i + 1))``
+    with ``omega_fi = (E_f - E_i)/hbar`` in rad/s and ``2 j_i + 1 = g_i`` the
+    degeneracy of the **INITIAL** state. d in C*m. Vectorized over omega / d.
+
+    Direction (the factor-of-g trap): omega > 0 is absorption, so ``j_initial``
+    is the lower level; omega < 0 is emission, and then ``j_initial`` is the
+    **upper** level. Passing the lower-state j with a negative omega overstates
+    |f| by g_upper/g_lower — exactly 2x on any D2 line — and is the standard
+    way this function is misused. The Racah reduced element's *magnitude* is
+    direction-symmetric (``|<i||er||f>|^2 = S``, the line strength, by the
+    3j normalization sum), so only the degeneracy label distinguishes the two
+    directions; the pair satisfies ``g_i f_(i->f) = -g_f f_(f->i)``.
+
+    Cross-check (spec 03 SS2.7, regression-tested against the same module's
+    :func:`einstein_A`): ``f_(e->g) = -2 pi eps0 m_e c^3 A_(e->g)/(e^2 omega^2)``.
     """
-    tj = _twice(j_lower, "j_lower")
+    tj = _twice(j_initial, "j_initial")
     if tj < 0:
-        raise ValueError(f"j_lower={j_lower} must be >= 0")
+        raise ValueError(f"j_initial={j_initial} must be >= 0")
     omega_arr = np.asarray(omega, dtype=float)
     d = np.asarray(d_reduced_racah_Cm, dtype=float)
     out = 2.0 * M_E * omega_arr * d**2 / (3.0 * HBAR * (tj + 1.0) * E_CHARGE**2)
@@ -365,7 +439,11 @@ def trk_sum(f_values: np.ndarray) -> float:
     """Sum of oscillator strengths (TRK helper, Eq. (2.19)). Dimensionless.
 
     Caller supplies the discrete + continuum set; downward transitions enter
-    with negative f. Exact TRK (= 1 to 0.5%) applies only to the hydrogenic
+    with negative f. Every term must be an ``f_(i->f)`` computed from the SAME
+    initial state i, i.e. :func:`oscillator_strength` called with that state's
+    j (see its "direction" note) — a downward channel evaluated with the
+    lower level's degeneracy is wrong by g_upper/g_lower and does not cancel
+    across the sum. Exact TRK (= 1 to 0.5%) applies only to the hydrogenic
     mode; alkali valence sums land in the sanity band 0.95-1.10 (spec 03 SS2.7).
     """
     return float(np.sum(np.asarray(f_values, dtype=float)))

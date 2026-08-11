@@ -21,7 +21,7 @@ import numpy as np
 from . import __version__
 from .constants import H, HBAR
 from .lindblad import LadderSystem
-from .provenance import Finding
+from .provenance import Finding, IntegrityError
 from .spectroscopy import ATMeasurement, eit_fwhm, measure_at_splitting
 from .superhet import NoiseBudget, OperatingPoint, optimize_lo
 
@@ -58,12 +58,26 @@ class LadderConfig:
     gamma_rp: float = 2 * np.pi * 2e3        # second Rydberg state decay
     deph_r: float = 2 * np.pi * 100e3        # extra Rydberg dephasing (laser+transit+collisions)
     transit: float = 0.0
-    # vapor / geometry
+    # Vapor / geometry.
+    #
+    # SPECIES-DEPENDENT DEFAULTS ARE A HAZARD (audit CRIT-1 / ruling R-15).
+    # These six fields (gamma_e above, plus mass, lambda_probe,
+    # lambda_coupling, element, isotope_fraction) describe Rb-87 in natural
+    # rubidium with a nominal 480 nm coupling laser. They exist so a
+    # hand-written LadderConfig works out of the box, NOT as physics: a Cs
+    # or Rb-85 run that forgets to override them is silently simulated in a
+    # Rb-87 cell, and a nominal lambda_coupling costs ~6% in the predicted
+    # AT splitting because lambda_c is state-dependent.
+    #
+    # Anything species-aware MUST build these from rydsim.atom rather than
+    # inherit them — objective.species_cell_parameters() is that path and is
+    # what the design layer uses. `species_defaults_in_use()` reports which
+    # of the six are still at their Rb-87 values so a report can say so.
     doppler: bool = True
     temperature: float = 300.0               # K
-    mass: float = 86.909 * 1.66053906892e-27  # kg (Rb-87 default; spec 01 data via schemes)
-    lambda_probe: float = 780.241e-9
-    lambda_coupling: float = 480.0e-9
+    mass: float = 86.909 * 1.66053906892e-27  # kg  (Rb-87, Steck rev 2.3.4)
+    lambda_probe: float = 780.241e-9         # m   (Rb D2)
+    lambda_coupling: float = 480.0e-9        # m   (NOMINAL — state-dependent)
     counter_propagating: bool = True
     # RF transition dipole moment for field inversion [C m]; None = unknown
     rf_dipole: float | None = None
@@ -75,6 +89,37 @@ class LadderConfig:
     element: str = "Rb"
     isotope_fraction: float = 0.2783   # Rb-87 in natural Rb (Steck)
     cell_length: float = 0.05
+    # Optical-depth ceiling for the transfer-curve chain. In the weak-probe
+    # limit Beer-Lambert with the EIT-suppressed chi is exact at any OD
+    # (chi is probe-independent; the coupling is undepleted because the
+    # intermediate state is thermally empty), so moderate OD is VALID
+    # physics — merely a poor operating point. Beyond ~5 the transmitted
+    # power collapses (T < 0.7%), the transduction slope is numerically
+    # dead across the LO scan, and the derived NEF diverges to a number
+    # that looks like a result (audit CRIT-2: a Cs 313 K / 5 cm design
+    # returned 5.4e9 nV/cm/rtHz). High-OD EIT operation needs the
+    # z-propagation solver (spec 06 §7.2 future work); until then, refuse.
+    max_optical_depth: float = 5.0
+
+    #: The six species-dependent fields and their Rb-87 default values.
+    _SPECIES_DEFAULTS = {
+        "gamma_e": 2 * np.pi * 6.07e6,
+        "mass": 86.909 * 1.66053906892e-27,
+        "lambda_probe": 780.241e-9,
+        "lambda_coupling": 480.0e-9,
+        "element": "Rb",
+        "isotope_fraction": 0.2783,
+    }
+
+    def species_defaults_in_use(self) -> list[str]:
+        """Which species-dependent fields are still at their Rb-87 defaults.
+
+        A non-empty list on a non-Rb-87 run means the config is physically
+        mixed and any derived number is suspect (audit CRIT-1). Reports and
+        findings should surface this rather than assume the caller knew.
+        """
+        return [k for k, v in self._SPECIES_DEFAULTS.items()
+                if getattr(self, k) == v]
 
     def resolved_density(self) -> float:
         """Explicit number_density if set, else the vapor-pressure model."""
@@ -253,12 +298,29 @@ def superhet_transfer(cfg: LadderConfig, e_to_omega: float,
 
     d_ge = dipole_from_linewidth(
         cfg.gamma_e, wavelength_to_angular_freq(cfg.lambda_probe))
+    k_p = 2 * np.pi / cfg.lambda_probe
     out = np.empty(len(e_grid))
+    od_max = 0.0
     for i, e in enumerate(e_grid):
         c = dataclasses.replace(cfg, omega_rf=float(e) * e_to_omega)
         s_norm = spectrum(c, np.array([c.delta_probe]),
                           n_doppler_nodes=n_doppler_nodes)[0]
         chi = chi_si(np.array([s_norm]), cfg.resolved_density(), d_ge)
+        od_max = max(od_max, float(k_p * cfg.cell_length * np.imag(chi[0])))
         t = transmission(chi, cfg.cell_length, cfg.lambda_probe)[0]
         out[i] = probe_power_in * float(t)
+
+    # Optical-depth gate (audit CRIT-2; rationale on max_optical_depth).
+    # Beyond the ceiling the transmitted power collapses across the LO scan,
+    # the transduction slope is numerically dead, and the derived NEF
+    # diverges to a number that LOOKS like a result. Refuse it.
+    if od_max > cfg.max_optical_depth:
+        raise IntegrityError(
+            f"optical depth {od_max:.2f} exceeds the operating ceiling "
+            f"{cfg.max_optical_depth:.2f} for {cfg.element} at "
+            f"{cfg.temperature:.1f} K over {cfg.cell_length*100:.1f} cm "
+            f"(N = {cfg.resolved_density():.3g} m^-3): transmitted probe "
+            "power is numerically dead across the LO scan, so any derived "
+            "NEF would be meaningless. Lower the temperature, shorten the "
+            "cell, or implement the z-propagation solver (spec 06 §7.2).")
     return out

@@ -41,7 +41,14 @@ Integrity-audit compliance (docs/spec/00-integrity-audit.md §3, items 1-5):
      NOT encoded anywhere in this module; only the 2016 Deiglmayr value ships.
      The offset is declared as a systematic via e_ion_systematic_hz.
   5. Rb-85 absolute optical frequencies carry a +-40 MHz E_I systematic
-     (Lee-1978 vs Sanguinetti-2009 6-sigma tension) via e_ion_systematic_hz.
+     (Lee-1978 vs Sanguinetti-2009 6-sigma tension). Per audit R8 that
+     systematic must sit in the UNCERTAINTY FIELD of the result, not in a
+     docstring: energy_sourced_hz / coupling_laser_sourced_hz /
+     coupling_wavelength_sourced_m return an AbsoluteValue carrying the
+     statistical and systematic parts separately (audit §4 item 10) plus the
+     validity flags crossed on the way (audit §4 item 8 / §3 item 1). The
+     plain-float energy_hz / coupling_laser_hz remain for interval and array
+     work, where E_I cancels exactly.
 """
 
 from __future__ import annotations
@@ -58,11 +65,15 @@ from .provenance import Confidence, IntegrityError, SourcedValue
 
 __all__ = [
     "RitzForm", "RitzSeries", "HyperfineConstants", "DLine", "Species",
-    "RB85", "RB87", "CS133", "SPECIES",
+    "AbsoluteValue",
+    "RB85", "RB87", "CS133", "SPECIES", "element_symbol",
     "rydberg_constant_hz", "quantum_defect", "polarization_defect",
     "ritz_form_a", "ritz_form_b", "n_star", "binding_energy_hz", "energy_hz",
-    "transition_hz", "rf_transition_hz", "hyperfine_shift_hz",
+    "energy_sourced_hz",
+    "transition_hz", "rf_transition_hz", "hyperfine_levels",
+    "hyperfine_shift_hz",
     "probe_transition_hz", "coupling_laser_hz", "coupling_wavelength_m",
+    "coupling_laser_sourced_hz", "coupling_wavelength_sourced_m",
     "rydberg_hfs_A_hz", "rydberg_hfs_coefficient", "RYDBERG_HFS_COEFF",
     "RB87_E_ION_FROM_5S12_F1", "RB87_E_ION_FROM_5P32_F3",
 ]
@@ -164,6 +175,55 @@ class Species:
     e_ion_systematic_hz: float = 0.0
     e_ion_note: str = ""
     mass_source: str = ""
+    # Chemical element symbol ('Rb', 'Cs'). Single source of truth for the
+    # species -> element mapping that rydsim.cell (vapor pressure, melting
+    # point) and the budget layer need; see element_symbol(). Left empty on
+    # synthetic species (e.g. the analytic hydrogen limit), which then refuse.
+    element: str = ""
+
+
+@dataclass(frozen=True)
+class AbsoluteValue:
+    """A public result with its uncertainty DECOMPOSED and validity attached.
+
+    Audit §4 item 10 requires the statistical uncertainty to ship SEPARATELY
+    from declared systematics (Rb-85 +-40 MHz Lee-1978/Sanguinetti-2009
+    tension, audit R8; Cs +0.47 MHz 2025-erratum offset, deliberately not
+    applied, audit R3). Audit §4 item 8 requires every validity gate crossed
+    in warn mode to be enumerated in the result rather than left as a
+    ``warnings.warn`` the caller can filter away — hence ``validity_flags``
+    (empty tuple = none crossed).
+
+    ``statistical`` covers only the uncertainties this module actually has
+    data for (E_I, D-line centroid). The quantum-defect FIT uncertainties are
+    not encoded — several spec 01 §3.4-3.5 rows are tagged "uncertainties
+    MISSING" — so ``statistical`` is a lower bound and says so in ``note``.
+    ``confidence`` is the provenance enum, which carries no VERIFIED-ARC
+    class; ARC-transcribed rows are reported conservatively one class down
+    and their verbatim tag is preserved in ``source``.
+    """
+
+    value: float
+    unit: str
+    statistical: float
+    systematic: float
+    source: str
+    confidence: Confidence = Confidence.VERIFIED
+    validity_flags: tuple[str, ...] = ()
+    note: str = ""
+
+    @property
+    def total_uncertainty(self) -> float:
+        """Statistical and declared systematic added in quadrature."""
+        return float(np.hypot(self.statistical, self.systematic))
+
+    def as_sourced(self) -> SourcedValue:
+        """Collapse to a provenance.SourcedValue carrying the total."""
+        flags = "; ".join(self.validity_flags)
+        note = self.note + (f" | validity flags: {flags}" if flags else "")
+        return SourcedValue(self.value, self.unit, self.source,
+                            self.confidence,
+                            uncertainty=self.total_uncertainty, note=note)
 
 
 # ---------------------------------------------------------------------------
@@ -362,7 +422,8 @@ RB85 = Species(
                 "[VERIFIED]. Steck/Lee-1978 sits 41 MHz (6 sigma) above -> "
                 "+-40 MHz systematic on Rb-85 ABSOLUTE optical frequencies; "
                 "cancels in Rydberg-Rydberg intervals (spec 01 §3.3/§7.2)."),
-    mass_source="AME via ARC; Steck 2.3.4 cross-check [VERIFIED]")
+    mass_source="AME via ARC; Steck 2.3.4 cross-check [VERIFIED]",
+    element="Rb")
 
 RB87 = Species(
     name="Rb87", mass_u=86.909_180_5310, nuclear_spin=1.5, abundance=0.2783,
@@ -373,7 +434,8 @@ RB87 = Species(
     e_ion_note=("Mack 2011: E_I(from 5S1/2 F=1)/h = 1 010 029 164.6(3) MHz, "
                 "converted to centroid via ruling R-11 (+dE_hfs(F=1) = "
                 "-4271.68 MHz) [VERIFIED]."),
-    mass_source="AME via ARC; Steck 2.3.4 cross-check [VERIFIED]")
+    mass_source="AME via ARC; Steck 2.3.4 cross-check [VERIFIED]",
+    element="Rb")
 
 CS133 = Species(
     name="Cs133", mass_u=132.905_451_9610, nuclear_spin=3.5, abundance=1.0,
@@ -388,9 +450,28 @@ CS133 = Species(
                 "audit R3 the erratum VALUE is not encoded — the offset is "
                 "declared as a systematic on Cs absolute energies only and "
                 "cancels in all Rydberg-Rydberg intervals."),
-    mass_source="AME via ARC; Steck 2.3.4 cross-check [VERIFIED]")
+    mass_source="AME via ARC; Steck 2.3.4 cross-check [VERIFIED]",
+    element="Cs")
 
 SPECIES: dict[str, Species] = {"Rb85": RB85, "Rb87": RB87, "Cs133": CS133}
+
+
+def element_symbol(sp: Species) -> str:
+    """Chemical element symbol of the species ('Rb', 'Cs').
+
+    The single source of truth for the species -> element mapping (audit R10:
+    duplicated constants are how normative values fork). Callers that need an
+    element-keyed table — rydsim.cell's vapor-pressure coefficients and
+    melting points above all — must route through here instead of slicing the
+    isotope name or hard-coding a species test. Refuses rather than guessing
+    for a species with no declared element.
+    """
+    if not sp.element:
+        raise IntegrityError(
+            f"species {sp.name!r} declares no element symbol; refusing to "
+            "infer one from the name (audit R10: no duplicated/derived "
+            "species constants)")
+    return sp.element
 
 
 # Auxiliary Mack 2011 anchors for absolute benchmarks (spec 01 §3.3, AS-04..06)
@@ -578,8 +659,12 @@ def energy_hz(sp: Species, n: np.ndarray | int, l: int, j: float, *,
     ref='ground_centroid': e_ion_hz - c*R_M/n*^2 (absolute optical scale,
     from the ground hyperfine centroid — ruling R-11). Rb-85 / Cs absolute
     values carry the declared systematic sp.e_ion_systematic_hz (+-40 MHz /
-    +0.47 MHz) which the caller must propagate (audit §3 items 4-5); it
-    cancels in intervals, which is why transition_hz never touches E_I.
+    +0.47 MHz); it cancels in intervals, which is why transition_hz never
+    touches E_I. This float API does NOT carry that systematic — audit R8
+    forbids shipping an Rb-85 absolute frequency whose systematic lives only
+    in prose, so absolute work must use energy_sourced_hz(), which returns
+    the uncertainty decomposition and validity flags as data. Kept as a float
+    for the interval/array/vectorized paths where E_I cancels exactly.
     """
     e_b = binding_energy_hz(sp, n, l, j)
     if ref == "ionization":
@@ -587,6 +672,105 @@ def energy_hz(sp: Species, n: np.ndarray | int, l: int, j: float, *,
     if ref == "ground_centroid":
         return sp.e_ion_hz - e_b
     raise ValueError(f"unknown ref {ref!r}")
+
+
+# --- provenance helpers for the sourced (absolute-scale) API ---------------
+
+_DEFECT_UNC_NOTE = (
+    "statistical covers the encoded E_I / D-line-centroid uncertainties only; "
+    "quantum-defect FIT uncertainties are not encoded (spec 01 §3.4-3.5 rows "
+    "tagged 'uncertainties MISSING'), so it is a lower bound")
+
+
+def _row_confidence(tag: str) -> Confidence:
+    """Map a RitzSeries tag string onto the provenance.Confidence enum.
+
+    The enum carries no VERIFIED-ARC member, although audit §4 item 4 ranks
+    that class between VERIFIED and LITERATURE-RECALL. An ARC-transcribed row
+    is therefore reported one class DOWN (never up), with its verbatim tag
+    preserved in the source string.
+    """
+    t = tag.strip().upper()
+    if t.startswith("VERIFIED-ARC"):
+        return Confidence.LITERATURE_RECALL
+    if t.startswith("VERIFIED"):
+        return Confidence.VERIFIED
+    if t.startswith("LITERATURE"):
+        return Confidence.LITERATURE_RECALL
+    return Confidence.UNVERIFIED
+
+
+def _structure_provenance(sp: Species, l: int, j: float) -> tuple[str, Confidence]:
+    """(source string, confidence floor) of the (n l j) energy path."""
+    if l >= 5:
+        return (f"{sp.name} E_I ({sp.e_ion_hz:.9e} Hz) + core-polarization "
+                f"defect Eq. (1.6), alpha_d = {sp.alpha_core_au} a.u. "
+                "[Marinescu 1994 via ARC, VERIFIED-ARC]",
+                Confidence.LITERATURE_RECALL)
+    row = _series_for(sp, l, j)
+    return (f"{sp.name} E_I ({sp.e_ion_hz:.9e} Hz, spec 01 §3.3) + Ritz "
+            f"series (l={l}, j={j}): {row.source} [{row.confidence}]",
+            _row_confidence(row.confidence))
+
+
+def _structure_validity_flags(sp: Species, n: int, l: int,
+                              j: float) -> tuple[str, ...]:
+    """Validity gates crossed in warn mode, as data (audit §4 item 8)."""
+    flags: list[str] = []
+    if l >= 5:
+        flags.append(
+            f"l={l} >= 5: delta from the core-polarization formula Eq. (1.6), "
+            "not a fitted series (spec 01 §2.3)")
+    else:
+        row = _series_for(sp, l, j)
+        if n < row.n_min_mhz:
+            flags.append(
+                f"n={n} < n_min_mhz={row.n_min_mhz}: below the MHz-grade Ritz "
+                "window (spec 01 §4.2 / audit §3 item 1); expect only "
+                "100-MHz-grade accuracy")
+    return tuple(flags)
+
+
+def energy_sourced_hz(sp: Species, n: int, l: int, j: float, *,
+                      ref: Literal["ionization", "ground_centroid"]
+                      = "ground_centroid") -> AbsoluteValue:
+    """energy_hz with uncertainty decomposition and validity flags attached.
+
+    Audit §3 item 5 / R8: an Rb-85 ABSOLUTE optical frequency may not ship
+    without the +-40 MHz E_I systematic **in its uncertainty field** — a
+    docstring footnote does not satisfy the rule. This is that field.
+
+    ref='ground_centroid' carries statistical = sp.e_ion_unc_hz and
+    systematic = sp.e_ion_systematic_hz (Rb-85 40 MHz Lee/Sanguinetti
+    tension; Cs 0.47 MHz erratum offset, not applied).
+    ref='ionization' returns the (negated) binding energy, in which E_I
+    cancels exactly (spec 01 §4.1 step 4), so it carries NEITHER term —
+    that asymmetry is the point of ruling R-11 and audit R8.
+
+    Scalar n only; the array path stays on energy_hz.
+    """
+    if np.ndim(n):
+        raise ValueError("energy_sourced_hz is scalar-only "
+                         "(use energy_hz for array n)")
+    n_int = int(n)
+    value = float(energy_hz(sp, n_int, l, j, ref=ref))
+    src, conf = _structure_provenance(sp, l, j)
+    flags = _structure_validity_flags(sp, n_int, l, j)
+    if ref == "ionization":
+        return AbsoluteValue(
+            value, "Hz", statistical=0.0, systematic=0.0,
+            source=f"binding energy (E_I-free) via {src}",
+            confidence=conf, validity_flags=flags,
+            note=("binding energy: E_I cancels exactly, so the Rb-85/Cs "
+                  "absolute-scale systematic does not apply (audit R8). "
+                  + _DEFECT_UNC_NOTE))
+    return AbsoluteValue(
+        value, "Hz", statistical=float(sp.e_ion_unc_hz),
+        systematic=float(sp.e_ion_systematic_hz), source=src,
+        confidence=conf, validity_flags=flags,
+        note=(f"absolute optical scale from the ground hyperfine centroid "
+              f"(ruling R-11). Declared systematic: {sp.e_ion_note} "
+              + _DEFECT_UNC_NOTE))
 
 
 def transition_hz(sp: Species, n1: np.ndarray | int, l1: int, j1: float,
@@ -625,6 +809,24 @@ def _half_int(x: float, name: str) -> Fraction:
     return Fraction(int(round(two_x)), 2)
 
 
+def hyperfine_levels(i_nuc: float, j_elec: float) -> tuple[float, ...]:
+    """The F ladder for (I, J): |I-J|, |I-J|+1, ..., I+J (spec 01 §2.4).
+
+    Angular-momentum addition allows only these values — F runs in INTEGER
+    steps from |I-J| to I+J, so half of the interval's half-integers name no
+    level at all. Public so callers can enumerate valid F rather than trying
+    values and reading the exception.
+    """
+    lo = abs(_half_int(i_nuc, "I") - _half_int(j_elec, "J"))
+    hi = _half_int(i_nuc, "I") + _half_int(j_elec, "J")
+    out: list[float] = []
+    f = lo
+    while f <= hi:
+        out.append(float(f))
+        f += 1
+    return tuple(out)
+
+
 def hyperfine_shift_hz(hfs: HyperfineConstants, i_nuc: float, j_elec: float,
                        f_tot: float) -> float:
     """F-level shift from the fine-structure centroid [Hz], spec 01 Eq. (1.7).
@@ -633,12 +835,24 @@ def hyperfine_shift_hz(hfs: HyperfineConstants, i_nuc: float, j_elec: float,
     [4 I(2I-1) J(2J-1)], K = F(F+1) - I(I+1) - J(J+1). K and the B-term
     ratio are evaluated in exact rationals; B term only for I, J > 1/2.
     The octupole C term (Cs 6P3/2, 0.56 kHz) is provenance-only, not applied.
+
+    F is validated against the FULL rule, not just the triangle bounds: it
+    must lie on the integer ladder |I-J| .. I+J (see hyperfine_levels). The
+    triangle test alone admits every half-integer inside the interval and
+    Eq. (1.7) evaluates happily on them, which is how F'=5/2 used to return a
+    plausible-looking Rb-87 D2 line 149 MHz off the real F=2 -> F'=3
+    transition. Refuse-to-guess: an F that names no level raises.
     """
     I = _half_int(i_nuc, "I")
     J = _half_int(j_elec, "J")
     F = _half_int(f_tot, "F")
     if not abs(I - J) <= F <= I + J:
         raise ValueError(f"F={f_tot} outside |I-J|..I+J for I={i_nuc}, J={j_elec}")
+    if (F - abs(I - J)).denominator != 1:
+        raise ValueError(
+            f"F={f_tot} is not on the integer ladder |I-J|..I+J = "
+            f"{hyperfine_levels(i_nuc, j_elec)} for I={i_nuc}, J={j_elec}: "
+            "that F names no hyperfine level (spec 01 §2.4)")
     K = F * (F + 1) - I * (I + 1) - J * (J + 1)
     shift = hfs.A_hz * float(K) / 2.0
     if I > Fraction(1, 2) and J > Fraction(1, 2):
@@ -653,8 +867,10 @@ def probe_transition_hz(sp: Species, line: Literal["D1", "D2"],
     """Hyperfine-resolved D-line frequency [Hz], spec 01 Eq. (1.10).
 
     nu(F -> F') = nu_centroid + dE_hfs(upper, F')/h - dE_hfs(ground, F)/h.
-    Validates F/F' against the I (+-) J ranges; hyperfine_shift_hz enforces
-    them exactly. Frequencies are vacuum, Steck rev 2.3.4 centroids.
+    F and F' are validated by hyperfine_shift_hz against the FULL rule — the
+    triangle bounds AND the integer ladder |I-J|..I+J (hyperfine_levels) —
+    so an F that names no level raises instead of returning a plausible
+    D-line number. Frequencies are vacuum, Steck rev 2.3.4 centroids.
     """
     dline = sp.d2 if line == "D2" else sp.d1
     if dline is None or sp.ground_hfs is None:
@@ -678,19 +894,84 @@ def coupling_laser_hz(sp: Species, line: Literal["D1", "D2"],
     hyperfine centroid; the intermediate level is taken at its hyperfine
     centroid. Ruling R-15: lambda_c is state-dependent and computed here at
     runtime — 480.0 nm (Rb) / 509.4 nm (Cs) are benchmark-fixture values only.
-    E_I systematics (Rb-85 +-40 MHz, Cs +0.47 MHz) apply — sub-1e-7 in nu_c.
+    E_I systematics (Rb-85 +-40 MHz, Cs +0.47 MHz) apply — sub-1e-7 in nu_c;
+    coupling_laser_sourced_hz attaches them as data.
+
+    Refuses a non-positive nu_c: the target would lie at or below the
+    intermediate level, so there is no upward coupling laser and c/nu_c would
+    be a meaningless (negative) wavelength. Above the per-species hard floor
+    every state clears the D lines by >= 480 THz, so this gate cannot fire on
+    a legitimate ladder.
     """
     dline = sp.d2 if line == "D2" else sp.d1
     if dline is None:
         raise IntegrityError(f"{sp.name} carries no {line} dataset")
-    return energy_hz(sp, n, l, j, ref="ground_centroid") - dline.nu0_hz
+    nu_c = energy_hz(sp, n, l, j, ref="ground_centroid") - dline.nu0_hz
+    if np.any(np.asarray(nu_c) <= 0.0):
+        raise IntegrityError(
+            f"{sp.name} {line} -> (n={n}, l={l}, j={j}): coupling frequency "
+            f"nu_c = {np.min(np.asarray(nu_c)):.6e} Hz is not positive — the "
+            "target lies at or below the intermediate level, so no upward "
+            "coupling laser exists (refusing to return a negative wavelength)")
+    return nu_c
 
 
 def coupling_wavelength_m(sp: Species, line: Literal["D1", "D2"],
                           n: np.ndarray | int, l: int, j: float,
                           ) -> np.ndarray | float:
-    """Vacuum coupling wavelength lambda_c = c/nu_c [m] (ruling R-15)."""
+    """Vacuum coupling wavelength lambda_c = c/nu_c [m] (ruling R-15).
+
+    THE mechanism lock #10 / R-15 exist for: the AT/Doppler factor
+    lambda_c/lambda_p is state-dependent, so a hard-coded 480 nm is a +1.34 %
+    error at Rb n=20, -0.14 % at n=100, and a 6.2 % error for Cs (true
+    lambda_c = 509.71 nm at 47D5/2). Every consumer of the two-photon Doppler
+    mismatch must call this per state.
+    """
     return C / coupling_laser_hz(sp, line, n, l, j)
+
+
+def coupling_laser_sourced_hz(sp: Species, line: Literal["D1", "D2"],
+                              n: int, l: int, j: float) -> AbsoluteValue:
+    """coupling_laser_hz with uncertainty decomposition + validity flags.
+
+    nu_c = E(n l j | ground centroid) - nu0(line), so the statistical part is
+    the published E_I uncertainty and the Steck D-line centroid uncertainty
+    in quadrature; the systematic is the declared E_I systematic (audit R8 /
+    R3), which does NOT cancel here because nu_c is an absolute frequency.
+    Scalar n only.
+    """
+    if np.ndim(n):
+        raise ValueError("coupling_laser_sourced_hz is scalar-only "
+                         "(use coupling_laser_hz for array n)")
+    dline = sp.d2 if line == "D2" else sp.d1
+    if dline is None:
+        raise IntegrityError(f"{sp.name} carries no {line} dataset")
+    n_int = int(n)
+    value = float(coupling_laser_hz(sp, line, n_int, l, j))
+    src, conf = _structure_provenance(sp, l, j)
+    return AbsoluteValue(
+        value, "Hz",
+        statistical=float(np.hypot(sp.e_ion_unc_hz, dline.nu0_unc_hz)),
+        systematic=float(sp.e_ion_systematic_hz),
+        source=f"{src}; minus {line} centroid {dline.source}",
+        confidence=conf,
+        validity_flags=_structure_validity_flags(sp, n_int, l, j),
+        note=("coupling laser, intermediate level at its hyperfine centroid "
+              "(ruling R-15: computed per state, never hard-coded). "
+              + _DEFECT_UNC_NOTE))
+
+
+def coupling_wavelength_sourced_m(sp: Species, line: Literal["D1", "D2"],
+                                  n: int, l: int, j: float) -> AbsoluteValue:
+    """coupling_wavelength_m with the uncertainty propagated: dl/l = dnu/nu."""
+    nu = coupling_laser_sourced_hz(sp, line, n, l, j)
+    lam = C / nu.value
+    scale = lam / nu.value
+    return AbsoluteValue(
+        lam, "m", statistical=nu.statistical * scale,
+        systematic=nu.systematic * scale, source=nu.source,
+        confidence=nu.confidence, validity_flags=nu.validity_flags,
+        note="lambda_c = c/nu_c; " + nu.note)
 
 
 # ---------------------------------------------------------------------------

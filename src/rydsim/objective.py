@@ -135,8 +135,12 @@ class SensorDesign:
     # realistic offset to see the frequency-noise term that published work
     # identifies as dominant.
     probe_detuning_hz: float = 0.0
-    # dephasing not yet derived from first principles (until lifetimes lands)
+    # Rydberg dephasing: still a lab-technical input (laser linewidths,
+    # stray fields, collisions) — NOT derived from first principles.
     rydberg_dephasing_hz: float = 100e3
+    # Rydberg population decay: used ONLY when no state is named. With a
+    # real state the rate comes from rydsim.lifetimes (Beterov radiative +
+    # BBR); see rydberg_decay_hz().
     rydberg_decay_hz: float = 2e3
 
     def key(self) -> tuple:
@@ -240,19 +244,81 @@ def _rf_frequency(design: SensorDesign) -> tuple[float, int] | None:
     return float(freq), int(sign)
 
 
+def rydberg_decay_hz(design: SensorDesign) -> tuple[float, str]:
+    """(Rydberg population decay rate [Hz], provenance) for this design.
+
+    Computed from `rydsim.lifetimes` (Beterov radiative + BBR fits) whenever
+    the design names a real state — the rate scales roughly as n*^-3, so
+    holding it fixed across an n-sweep suppresses a term that OPPOSES the
+    n^2 dipole gain. Falls back to the design's explicit
+    `rydberg_decay_hz` only when no state is named.
+    """
+    if design.n is None or not design.state:
+        return design.rydberg_decay_hz, "fixed default (no state named)"
+    from .atom import SPECIES
+    from .lifetimes import effective_lifetime_fit
+
+    sp = SPECIES[design.species]
+    l, j = parse_state(design.state)
+    tau_s = float(effective_lifetime_fit(sp, design.n, l, j,
+                                         design.temperature_k))
+    return 1.0 / (2 * np.pi * tau_s), "Beterov fit (radiative + BBR)"
+
+
+def species_cell_parameters(design: SensorDesign) -> dict:
+    """Vapor-cell parameters for the design's ACTUAL species (audit CRIT-1).
+
+    Every species-dependent quantity the EIT/vapor engine needs — element,
+    isotope fraction, atomic mass, probe and coupling wavelengths, and the
+    intermediate-state linewidth — resolved from `rydsim.atom`. Omitting
+    these silently simulates a Cs or Rb-85 design inside a Rb-87 cell.
+
+    The coupling wavelength is computed per state via
+    `atom.coupling_wavelength_m` (ruling R-15: lambda_c is state-dependent
+    and must never be a hard-coded 480 nm).
+    """
+    from .atom import SPECIES, coupling_wavelength_m, element_symbol
+    from .cell import NATURAL_ABUNDANCE
+    from .constants import AMU
+
+    sp = SPECIES[design.species]
+    # single source of truth for species -> element (audit R10); never slice
+    # the isotope name — that hack was duplicated in three modules
+    element = element_symbol(sp)
+    d2 = sp.d2
+    if d2 is None:
+        raise IntegrityError(
+            f"{sp.name} has no D2 line data; cannot build a vapor cell "
+            "configuration (refusing to substitute another species)")
+    out = {
+        "element": element,
+        "isotope_fraction": NATURAL_ABUNDANCE.get(sp.name, sp.abundance),
+        "mass": sp.mass_u * AMU,
+        "lambda_probe": d2.lambda_vac_m,
+        "gamma_e": d2.gamma_rad_s,
+    }
+    if design.n is not None and design.state:
+        l, j = parse_state(design.state)
+        out["lambda_coupling"] = float(
+            coupling_wavelength_m(sp, "D2", design.n, l, j))
+    return out
+
+
 def _to_ladder_config(design: SensorDesign, dipole: float) -> LadderConfig:
     tau = 2 * np.pi
+    gamma_r_hz, _ = rydberg_decay_hz(design)
     return LadderConfig(
         name=f"designer:{design.species}:{design.n}{design.state or ''}",
         delta_probe=tau * design.probe_detuning_hz,
         omega_probe=tau * design.probe_rabi_hz,
         omega_coupling=tau * design.coupling_rabi_hz,
-        gamma_r=tau * design.rydberg_decay_hz,
-        gamma_rp=tau * design.rydberg_decay_hz,
+        gamma_r=tau * gamma_r_hz,
+        gamma_rp=tau * gamma_r_hz,
         deph_r=tau * design.rydberg_dephasing_hz,
         temperature=design.temperature_k,
         cell_length=design.cell_length_m,
         rf_dipole=dipole,
+        **species_cell_parameters(design),
     )
 
 

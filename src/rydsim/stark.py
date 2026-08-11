@@ -48,7 +48,10 @@ Integrity-audit compliance (docs/spec/00-integrity-audit.md §3 items 24-30):
   24. perturbative alpha refuses n < 10 (EngineValidityError — continuum
       omission; H 1s misses ~19 %, documented by RS-07-16).
   25. quasi-degenerate partner (E_mix < 50 V/m) or high-l (l >= 4) target
-      -> DegeneracyError; high-l states must use the manifold map.
+      -> DegeneracyError; high-l states must use the manifold map. The
+      E_mix gate is enforced by the SHARED helper _assemble_alpha_checked,
+      so alpha_perturbative and alpha_dynamic cannot drift apart, and
+      E_mix_Vm ships on both result objects.
   26. dynamic alpha inside the resonance guard band -> ResonanceError.
   27. dynamic results always carry the TRK completeness S and the
       crossover bound |1-S| e^2/(m_e omega^2) — the truncated sum is never
@@ -82,7 +85,7 @@ from typing import Literal, Sequence
 
 import numpy as np
 from scipy.linalg import eigh
-from scipy.optimize import linear_sum_assignment
+from scipy.optimize import linear_sum_assignment, minimize_scalar
 
 from .angular import angular_factor, reduced_dipole_j
 from .atom import SPECIES, Species, binding_energy_hz
@@ -100,6 +103,7 @@ __all__ = [
     "alpha_perturbative", "alpha_scalar_tensor", "alpha_dynamic",
     "alpha_ponderomotive", "hydrogen_1s_discrete_alpha_au",
     "StarkBasis", "StarkMatrices", "StarkMapResult", "MapCurvature",
+    "ManifoldGap",
     "basis_states", "build_stark_matrices", "stark_map",
     "stark_map_curvature", "alpha_map_curvature", "manifold_gap",
     "hydrogen_manifold_slopes_Cm", "hydrogen_stark_energy_J",
@@ -482,6 +486,35 @@ def _assemble_alpha(terms: list[tuple], l: int, j: float, mj: float,
     return total, math.sqrt(var), e_mix, abs(tail)
 
 
+def _check_e_mix(e_mix: float) -> None:
+    """Audit §3 item 25 quasi-degeneracy refusal, shared by every consumer
+    of the second-order sum (static AND dynamic).
+
+    Second-order PT through a quasi-degeneracy is divergent, not merely
+    inaccurate: one denominator becomes comparable to the field-induced
+    coupling, so the sum is arbitrary. Raise, never guess (spec 07 §4.1).
+    """
+    if e_mix < E_MIX_FLOOR_VM:
+        raise DegeneracyError(
+            f"quasi-degenerate partner: E_mix = {e_mix:.1f} V/m < "
+            f"{E_MIX_FLOOR_VM} V/m — perturbative alpha invalid, use the "
+            "Stark map (spec 07 §4.1; audit §3 item 25)")
+
+
+def _assemble_alpha_checked(terms: list[tuple], l: int, j: float, mj: float,
+                            omega_rad_s: float) -> tuple[float, float, float,
+                                                         float]:
+    """``_assemble_alpha`` with the item-25 quasi-degeneracy gate applied.
+
+    The single entry point every public alpha must go through: E_mix is a
+    ZERO-FIELD property of the partner set, so the same cap governs the
+    static and the dynamic sums (they share the terms and the denominators).
+    """
+    total, sig, e_mix, tail = _assemble_alpha(terms, l, j, mj, omega_rad_s)
+    _check_e_mix(e_mix)
+    return total, sig, e_mix, tail
+
+
 def _decompose(j: float, mj_alphas: dict[float, float]) -> tuple[float, float]:
     """(alpha0_SI, alpha2_SI) from the m_j set via Eq. (7.4) least squares.
 
@@ -562,11 +595,7 @@ def alpha_perturbative(species: Species | str, n: int, l: int, j: float,
         if abs(m - abs(mj)) < 1e-9:
             sig, e_mix, tail = s, em, tl
     alpha_si = alphas[abs(mj)]
-    if e_mix < E_MIX_FLOOR_VM:
-        raise DegeneracyError(
-            f"quasi-degenerate partner: E_mix = {e_mix:.1f} V/m < "
-            f"{E_MIX_FLOOR_VM} V/m — perturbative alpha invalid, use the "
-            "Stark map (spec 07 §4.1; audit §3 item 25)")
+    _check_e_mix(e_mix)
     a0_si, a2_si = _decompose(j, alphas)
 
     trk = 0.0
@@ -674,6 +703,11 @@ class DynamicPolarizability:
     omega >> all coupled omega_k, alpha -> -S e^2/(m_e omega^2), so the
     TRUNCATED sum can only reproduce the ponderomotive limit to |1 - S|).
     omega_k_max_rad_s: highest coupled transition frequency in the window.
+    E_mix_Vm: the perturbative validity field cap min_k |dE_k|/(2|e z_k|)
+    [V/m] of the SAME partner set the static sum uses — spec 07 §4.1
+    requires the result object to carry it, so a caller can reproduce the
+    audit §3 item 25 gate downstream (the gate itself is enforced inside
+    ``alpha_dynamic``).
     """
 
     species: str
@@ -687,6 +721,7 @@ class DynamicPolarizability:
     trk_completeness: float
     omega_k_max_rad_s: float
     n_window: int
+    E_mix_Vm: float
 
 
 def alpha_dynamic(species: Species | str, n: int, l: int, j: float, mj: float,
@@ -698,10 +733,14 @@ def alpha_dynamic(species: Species | str, n: int, l: int, j: float, mj: float,
 
     alpha(omega) = (2/hbar) sum_k omega_k |<k|d_z|v>|^2/(omega_k^2 -
     omega^2) [C^2 m^2/J]; omega in rad/s (lock #2). Same refusals as
-    ``alpha_perturbative`` plus the per-omega resonance guard. The result
-    carries the discrete TRK completeness S; per spec 07 §2.7, in the
-    crossover use the bound |1-S| e^2/(m_e omega^2) and for
-    omega >> omega_k switch to ``alpha_ponderomotive`` when S < 0.98.
+    ``alpha_perturbative`` — n < 10 (EngineValidityError), l >= 4 target
+    (DegeneracyError) and a quasi-degenerate partner with E_mix < 50 V/m
+    (DegeneracyError, audit §3 item 25: the SAME denominators appear in
+    Eq. 7.10, so the static cap governs the dynamic sum) — plus the
+    per-omega resonance guard. The result carries E_mix_Vm and the
+    discrete TRK completeness S; per spec 07 §2.7, in the crossover use
+    the bound |1-S| e^2/(m_e omega^2) and for omega >> omega_k switch to
+    ``alpha_ponderomotive`` when S < 0.98.
     alpha(omega -> 0) reproduces the static value (RS-07-14).
     """
     sp = _resolve_species(species)
@@ -709,6 +748,9 @@ def alpha_dynamic(species: Species | str, n: int, l: int, j: float, mj: float,
     om = np.asarray(omega_rad_s, dtype=float)
     terms = _window_partner_terms(sp, n, l, j, n_window)
     _resonance_check(terms, om, resonance_guard_rad_s)
+    # audit §3 item 25 — evaluated on the static (omega = 0) denominators
+    # BEFORE any coefficient is built, so no invalid number is ever formed
+    _, _, e_mix, _ = _assemble_alpha_checked(terms, l, j, abs(mj), 0.0)
     coeff = []
     wks = []
     trk = 0.0
@@ -730,7 +772,7 @@ def alpha_dynamic(species: Species | str, n: int, l: int, j: float, mj: float,
         species=sp.name, n=n, l=l, j=j, mj=mj,
         omega_rad_s=om, alpha_SI=alpha, alpha_static_SI=float(np.sum(c)),
         trk_completeness=trk, omega_k_max_rad_s=float(np.max(np.abs(wk))),
-        n_window=n_window)
+        n_window=n_window, E_mix_Vm=e_mix)
 
 
 def alpha_ponderomotive(omega_rad_s: np.ndarray | float) -> np.ndarray | float:
@@ -872,6 +914,16 @@ class StarkMapResult:
     assignment stayed below overlap_min after adaptive bisection (ambiguous
     only at near-exact crossings — hydrogen). flags: validity flags
     (audit §4 item 8), e.g. 'above_F_ion' (audit §3 item 30 hand-off).
+
+    Convergence record (audit §4 item 6 — the demonstration ships as DATA,
+    never as a bare boolean), populated when conv_check_state is given:
+      conv_move_hz  |E_wide - E_base|/h at max(fields) [Hz] — what widening
+                    the basis actually moved the tracked eigenvalue;
+      conv_shift_hz |E_base(F_max) - E_base(0)|/h [Hz] — the FIELD-INDUCED
+                    shift the movement is judged against (the physically
+                    relevant quantity; the total eigenvalue is ~1e15 Hz of
+                    binding energy that no basis change touches);
+      conv_tol_hz   the tolerance actually applied [Hz].
     """
 
     mats: StarkMatrices
@@ -883,6 +935,9 @@ class StarkMapResult:
     converged: bool
     f_ion_Vm: float
     flags: list[str] = field(default_factory=list)
+    conv_move_hz: float = math.nan
+    conv_shift_hz: float = math.nan
+    conv_tol_hz: float = math.nan
 
 
 def _eig_at(mats: StarkMatrices, field_Vm: float) -> tuple[np.ndarray,
@@ -905,7 +960,9 @@ def stark_map(basis: StarkBasis | StarkMatrices,
               fields_Vm: np.ndarray | Sequence[float], *,
               overlap_min: float = 0.9, max_bisect: int = 10,
               conv_check_state: tuple | None = None,
-              conv_tol_hz: float = 1e5) -> StarkMapResult:
+              conv_tol_hz: float = 1e5,
+              conv_rel_tol: float = 1e-3,
+              conv_floor_hz: float = 1.0) -> StarkMapResult:
     """Diagonalize H(E) = diag(E0) + E_field D over a field sweep with
     adiabatic state tracking (spec 07 §2.6). fields_Vm ascending [V/m].
 
@@ -918,9 +975,25 @@ def stark_map(basis: StarkBasis | StarkMatrices,
 
     conv_check_state: zero-field label (n, l, j) — reruns the map at
     max(fields) with the window widened by 2 in n and 2 in l (spec 07
-    §2.6) and RAISES IntegrityError if that state's eigenvalue moves more
-    than conv_tol_hz * h (spec 07 §4.2: FAIL, do not average). Fields
-    above F_ion(n_max) = F0/(16 n^4) are flagged 'above_F_ion', not
+    §2.6) and RAISES IntegrityError if that state's eigenvalue moves too
+    far (spec 07 §4.2: FAIL, do not average).
+
+    Convergence tolerance (audit §4 item 6). The movement is compared
+    against the FIELD-INDUCED shift |E(F_max) - E(0)|, not against the
+    total eigenvalue: the total is dominated by ~1e15 Hz of binding energy
+    that basis truncation barely touches, so a fixed absolute tolerance
+    certifies a statement whose strength varies by orders of magnitude
+    across n (the shift at 0.03 F_IT falls as n^-3, so 100 kHz is 15 % of
+    the whole shift for Rb 50S and > 50 % by n = 80). The applied
+    tolerance is
+        tol = min(conv_tol_hz, max(conv_rel_tol * |shift|, conv_floor_hz))
+    i.e. the spec 07 §2.6 absolute ceiling AND a 0.1 % relative-to-shift
+    requirement, with conv_floor_hz as the numerical-noise floor so the
+    gate can never demand sub-Hz agreement. All three numbers plus the
+    measured movement ship on the result (conv_move_hz / conv_shift_hz /
+    conv_tol_hz).
+
+    Fields above F_ion(n_max) = F0/(16 n^4) are flagged 'above_F_ion', not
     refused — the Hermitian map tracks resonance positions qualitatively
     there (spec 07 §7.3; audit §3 item 30).
     """
@@ -969,6 +1042,7 @@ def stark_map(basis: StarkBasis | StarkMatrices,
                 chw[fi] = np.max(np.abs(v_lo), axis=0) ** 2
         f_prev, v_prev = f_lo, v_lo
     converged = False
+    move_hz = shift_hz = tol_hz = math.nan
     if conv_check_state is not None:
         target = tuple(conv_check_state)
         if target not in mats.labels:
@@ -983,17 +1057,26 @@ def stark_map(basis: StarkBasis | StarkMatrices,
         f_max = fields[-1]
         e_base = _tracked_state_energy(mats, target, f_max)
         e_wide = _tracked_state_energy(wmats, target, f_max)
-        if abs(e_wide - e_base) > conv_tol_hz * H:
+        e_zero = _tracked_state_energy(mats, target, 0.0)
+        move_hz = abs(e_wide - e_base) / H
+        shift_hz = abs(e_base - e_zero) / H
+        tol_hz = min(conv_tol_hz, max(conv_rel_tol * shift_hz, conv_floor_hz))
+        if move_hz > tol_hz:
             raise IntegrityError(
                 f"basis-window convergence FAILED: widening the window moved "
                 f"the {target} eigenvalue at {f_max:.4g} V/m by "
-                f"{abs(e_wide - e_base) / H:.3e} Hz (> {conv_tol_hz:.0e} Hz)"
-                " — do not average (spec 07 §2.6/§4.2)")
+                f"{move_hz:.3e} Hz (> {tol_hz:.3e} Hz = min(abs ceiling "
+                f"{conv_tol_hz:.0e} Hz, max({conv_rel_tol:.0e} x field-"
+                f"induced shift {shift_hz:.3e} Hz, floor "
+                f"{conv_floor_hz:.3g} Hz))) — do not average "
+                "(spec 07 §2.6/§4.2; audit §4 item 6)")
         converged = True
     return StarkMapResult(mats=mats, fields_Vm=fields, energies_J=energies,
                           character_idx=chi, character_w=chw,
                           tracking_ok=tracking_ok, converged=converged,
-                          f_ion_Vm=f_ion, flags=flags)
+                          f_ion_Vm=f_ion, flags=flags,
+                          conv_move_hz=move_hz, conv_shift_hz=shift_hz,
+                          conv_tol_hz=tol_hz)
 
 
 def _tracked_state_energy(mats: StarkMatrices, target: tuple,
@@ -1014,6 +1097,12 @@ class MapCurvature:
     hyperpolarizability estimate — DIAGNOSTIC ONLY, never a finding
     (spec 07 §7.7 / audit §3 item 29). quartic_fraction = |c4| F^4 /
     (|c2| F^2) at the fit edge (must be < 1 %, spec 07 §4.2).
+
+    conv_move_hz / conv_shift_hz / conv_tol_hz: the StarkMapResult
+    convergence record forwarded verbatim (audit §4 item 6) — the measured
+    basis-widening movement, the field-induced shift it was judged
+    against, and the tolerance applied. ``converged`` alone is a boolean;
+    these three are the evidence behind it.
     """
 
     alpha_SI: float
@@ -1024,6 +1113,9 @@ class MapCurvature:
     quartic_fraction: float
     e_mix_Vm: float
     converged: bool
+    conv_move_hz: float = math.nan
+    conv_shift_hz: float = math.nan
+    conv_tol_hz: float = math.nan
 
 
 def stark_map_curvature(res: StarkMapResult, state: tuple, *,
@@ -1073,15 +1165,21 @@ def stark_map_curvature(res: StarkMapResult, state: tuple, *,
 def alpha_map_curvature(species: Species | str, n: int, l: int, j: float,
                         mj: float, *, n_span: int = 4, l_span: int = 4,
                         n_points: int = 8, conv_check: bool = True,
-                        conv_tol_hz: float = 1e5) -> MapCurvature:
+                        conv_tol_hz: float = 1e5,
+                        conv_rel_tol: float = 1e-3) -> MapCurvature:
     """Polarizability of |n l j m_j> from Stark-map curvature — the
     perturbative cross-check route (spec 07 §2.6; benchmark RS-07-09).
 
     Basis: n +- n_span (never < 4, spec 07 §2.6), l <= l + l_span
     (weak-field curvature rule; conv_check widens by 2 in n and l and
-    fails loudly if the target moves > conv_tol_hz). Fit fields:
-    n_points points up to E_fit = min(0.03 F_IT(n), 0.1 E_mix) with E_mix
-    read from the built matrices (spec 07 §2.6 fit-window rule).
+    fails loudly if the target moves beyond the ``stark_map`` tolerance —
+    min(conv_tol_hz, max(conv_rel_tol x field-induced shift, 1 Hz)); the
+    measured movement, the shift and the tolerance are forwarded onto the
+    result). Fit fields: n_points points up to E_fit = min(0.03 F_IT(n),
+    0.1 E_mix) with E_mix read from the built matrices (spec 07 §2.6
+    fit-window rule). NOTE that E_fit is deliberately small, so the
+    field-induced shift is small too — which is exactly why the
+    convergence gate must be relative to it and not to the eigenvalue.
     """
     sp = _resolve_species(species)
     if n_span < 4:
@@ -1099,7 +1197,7 @@ def alpha_map_curvature(species: Species | str, n: int, l: int, j: float,
     fields = np.linspace(fit_max / n_points, fit_max, n_points)
     res = stark_map(mats, fields,
                     conv_check_state=target if conv_check else None,
-                    conv_tol_hz=conv_tol_hz)
+                    conv_tol_hz=conv_tol_hz, conv_rel_tol=conv_rel_tol)
     alpha_si, gamma_si = stark_map_curvature(res, target)
     # |c4 F^4| / |c2 F^2| at the fit edge, from the fitted coefficients
     quart = (abs(gamma_si) / 24.0) * fit_max**2 / max(abs(alpha_si) / 2.0,
@@ -1109,55 +1207,372 @@ def alpha_map_curvature(species: Species | str, n: int, l: int, j: float,
         alpha_SI=alpha_si, alpha_au=alpha_au,
         alpha_Hz_per_Vcm2=polarizability_au_to_hz_per_v2_cm2(alpha_au),
         gamma_SI_diagnostic=gamma_si, fit_max_field_Vm=fit_max,
-        quartic_fraction=quart, e_mix_Vm=e_mix, converged=res.converged)
+        quartic_fraction=quart, e_mix_Vm=e_mix, converged=res.converged,
+        conv_move_hz=res.conv_move_hz, conv_shift_hz=res.conv_shift_hz,
+        conv_tol_hz=res.conv_tol_hz)
+
+
+@dataclass(frozen=True)
+class ManifoldGap:
+    """Fan-edge separation of two adjacent manifolds (spec 07 §2.6 core-
+    effect regression, benchmark RS-07-08b) WITH its convergence record.
+
+    Two distinct quantities are reported, because they answer different
+    questions and only one of them is step-independent:
+
+    gap_J — the ADIABATIC separation E_{k2}(F) - E_{k1}(F) at the FIXED
+      ascending-eigenvalue indices k1 < k2 that the two fan edges occupy at
+      fields_Vm[0]. For a real-symmetric one-parameter family the sorted
+      eigenvalues are continuous and (generically) never cross, so this IS
+      the step -> 0 limit of any correct adiabatic tracking: it needs no
+      tracking parameters, is >= 0 by construction, and is the quantity the
+      convergence gates are applied to. Its minimum over the sweep is the
+      core-induced avoided-crossing gap (finite for an alkali, ~0 for
+      hydrogen, where the parabolic separability makes the crossing exact).
+
+    gap_tracked_J — the SIGNED separation from eigenvector-overlap tracking
+      of the two edge states (joint 2-state assignment + adaptive
+      bisection). It follows character rather than eigenvalue order and so
+      changes sign at a genuine crossing; ``crosses`` is read from it.
+      Tracking is diabatic through anticrossings narrower than the field
+      step, which is exactly why this quantity alone must never carry the
+      physics conclusion without the step-halving check.
+
+    min_gap_J / min_field_Vm: refined (bounded parabolic search, not the
+      grid argmin) minimum of the ADIABATIC gap and the field where it
+      occurs — for ``crosses`` it is refined inside the first sign-change
+      bracket, i.e. the crossing field itself.
+    levels_between: number of eigenstates lying between the two edges at
+      fields_Vm[0]. Alkali low-l intruders (Rb 33P, 32D between the n = 30
+      and n = 31 manifolds) make this > 0; if a basis is too narrow to hold
+      them the gap is wrong, so this integer is a convergence observable in
+      its own right and must not change when the basis is widened.
+    worst_overlap / tracking_ok / bisections: tracking quality.
+    converged / convergence: the halved-step and widened-basis re-runs and
+      the measured movements (audit §4 item 6 — evidence, not a boolean).
+    """
+
+    mats: StarkMatrices
+    n_lower: int
+    n_upper: int
+    fields_Vm: np.ndarray
+    gap_J: np.ndarray
+    gap_tracked_J: np.ndarray
+    min_gap_J: float
+    min_field_Vm: float
+    crosses: bool
+    levels_between: int
+    character_top: float
+    character_bot: float
+    worst_overlap: float
+    tracking_ok: bool
+    bisections: int
+    manifold_spacing_J: float
+    converged: bool
+    convergence: dict
+    flags: list[str] = field(default_factory=list)
+
+
+def _fan_edge_indices(mats: StarkMatrices, n_lower: int, n_upper: int,
+                      field_Vm: float, l_min_fan: int,
+                      character_min: float) -> tuple[int, int, float, float]:
+    """(k_top, k_bot, w_top, w_bot): ascending-eigenvalue indices of the
+    top of the n_lower fan and the bottom of the n_upper fan at field_Vm.
+
+    Fan membership = summed eigenvector weight > character_min on basis
+    states carrying the manifold's n with l >= l_min_fan (low-l alkali
+    states carry the manifold's n label but sit manifolds lower in energy —
+    quantum defects; hence the mask). Refuses when the identification is
+    ambiguous or when the two fans have already crossed at this field.
+    """
+    lab = mats.labels
+    is_h = len(lab[0]) == 2
+    l_cut = 0 if is_h else l_min_fan
+    mask_lo = np.array([s[0] == n_lower and s[1] >= l_cut for s in lab])
+    mask_hi = np.array([s[0] == n_upper and s[1] >= l_cut for s in lab])
+    if not (mask_lo.any() and mask_hi.any()):
+        raise IntegrityError(
+            f"basis {mats.basis.n_min}..{mats.basis.n_max} does not contain "
+            f"both n = {n_lower} and n = {n_upper} fan states (l >= {l_cut})")
+    w, v = _eig_at(mats, field_Vm)
+    w_lo = (v[mask_lo, :] ** 2).sum(axis=0)
+    w_hi = (v[mask_hi, :] ** 2).sum(axis=0)
+    i_lo = np.where(w_lo > character_min)[0]
+    i_hi = np.where(w_hi > character_min)[0]
+    if not (i_lo.size and i_hi.size):
+        raise IntegrityError(
+            f"fan identification failed at {field_Vm:.4g} V/m: no eigenstate "
+            f"carries > {character_min} weight on the n = {n_lower} / "
+            f"{n_upper} fans — start the sweep where the two manifold fans "
+            "are resolved and not yet overlapping (spec 07 §2.6)")
+    k_top = int(i_lo[np.argmax(w[i_lo])])
+    k_bot = int(i_hi[np.argmin(w[i_hi])])
+    if k_bot <= k_top:
+        raise IntegrityError(
+            f"the n = {n_lower} and n = {n_upper} fans already overlap at "
+            f"the first field {field_Vm:.4g} V/m (edge eigen-indices "
+            f"{k_top} >= {k_bot}): the sweep must START below the crossing "
+            "or the 'first anticrossing' is not bracketed (spec 07 §2.6)")
+    return k_top, k_bot, float(w_lo[k_top]), float(w_hi[k_bot])
+
+
+def _adiabatic_gap_J(mats: StarkMatrices, k_lo: int, k_hi: int,
+                     field_Vm: float) -> float:
+    """E_{k_hi}(F) - E_{k_lo}(F) [J] at fixed ascending-eigenvalue index."""
+    w = np.linalg.eigvalsh(np.diag(mats.e0_J) + field_Vm * mats.d_Cm)
+    return float(w[k_hi] - w[k_lo])
+
+
+def _track_fan_pair(mats: StarkMatrices, k_top: int, k_bot: int,
+                    fields: np.ndarray, overlap_min: float,
+                    max_bisect: int) -> tuple[np.ndarray, float, bool, int]:
+    """Overlap-track the two fan-edge states; signed gap per field.
+
+    The two states are matched JOINTLY (``linear_sum_assignment`` on the
+    2 x N overlap matrix), so they can never collapse onto the same
+    eigenvector — the failure mode of two independent argmax lookups. When
+    the worse of the two matched overlaps drops below overlap_min the field
+    step is bisected (up to max_bisect insertions per step), mirroring
+    ``stark_map``; if the ambiguity survives, tracking_ok goes False.
+    """
+    w, v = _eig_at(mats, fields[0])
+    v_top, v_bot = v[:, k_top], v[:, k_bot]
+    out = [w[k_bot] - w[k_top]]
+    worst_all = 1.0
+    tracking_ok = True
+    bisections = 0
+    f_lo = float(fields[0])
+    for fi in range(1, fields.size):
+        stack = [float(fields[fi])]
+        used = 0
+        while stack:
+            f_try = stack[-1]
+            w, v = _eig_at(mats, f_try)
+            ov = np.abs(np.vstack([v_top, v_bot]) @ v)
+            _, col = linear_sum_assignment(-ov)
+            a, b = int(col[0]), int(col[1])
+            worst = min(ov[0, a], ov[1, b])
+            if worst < overlap_min and used < max_bisect:
+                stack.append(0.5 * (f_lo + f_try))
+                used += 1
+                bisections += 1
+                continue
+            if worst < overlap_min:
+                tracking_ok = False
+            worst_all = min(worst_all, float(worst))
+            v_top, v_bot = v[:, a], v[:, b]
+            f_lo = f_try
+            stack.pop()
+            if not stack:
+                out.append(w[b] - w[a])
+    return np.array(out), worst_all, tracking_ok, bisections
+
+
+def _locate_gap_min(mats: StarkMatrices, k_lo: int, k_hi: int,
+                    fields: np.ndarray, gap_ad: np.ndarray,
+                    tracked: np.ndarray) -> tuple[float, float]:
+    """Refined (min adiabatic gap [J], field [V/m]).
+
+    When the tracked gap changes sign the branches genuinely cross, and the
+    minimum is refined inside that first sign-change bracket (for hydrogen
+    the adiabatic gap has many near-degenerate dips, so a global argmin
+    would be numerical noise). Otherwise the global grid argmin is used and
+    must be INTERIOR — an endpoint minimum means the closest approach is
+    not bracketed by the sweep, which is a refusal, not a result.
+    """
+    neg = np.where(tracked < 0.0)[0]
+    if neg.size:
+        i = int(neg[0])
+        lo, hi = float(fields[i - 1]), float(fields[i])
+    else:
+        i = int(np.argmin(gap_ad))
+        if i == 0 or i == fields.size - 1:
+            raise IntegrityError(
+                f"the fan-edge separation is minimal at the sweep endpoint "
+                f"{fields[i]:.4g} V/m: the closest approach is not bracketed "
+                "— widen fields_Vm (spec 07 §2.6)")
+        lo, hi = float(fields[i - 1]), float(fields[i + 1])
+    res = minimize_scalar(lambda f: _adiabatic_gap_J(mats, k_lo, k_hi, f),
+                          bounds=(lo, hi), method="bounded",
+                          options={"xatol": (hi - lo) * 1e-6})
+    if float(res.fun) < gap_ad[i]:
+        return float(res.fun), float(res.x)
+    return float(gap_ad[i]), float(fields[i])
+
+
+def _gap_run(mats: StarkMatrices, n_lower: int, n_upper: int,
+             fields: np.ndarray, l_min_fan: int, character_min: float,
+             overlap_min: float, max_bisect: int) -> dict:
+    """One complete fan-edge evaluation on a given basis and field grid."""
+    k_top, k_bot, w_top, w_bot = _fan_edge_indices(
+        mats, n_lower, n_upper, float(fields[0]), l_min_fan, character_min)
+    gap_ad = np.array([_adiabatic_gap_J(mats, k_top, k_bot, f)
+                       for f in fields])
+    tracked, worst, ok, nbis = _track_fan_pair(
+        mats, k_top, k_bot, fields, overlap_min, max_bisect)
+    min_gap, min_field = _locate_gap_min(mats, k_top, k_bot, fields,
+                                         gap_ad, tracked)
+    return {"k_top": k_top, "k_bot": k_bot, "w_top": w_top, "w_bot": w_bot,
+            "gap_J": gap_ad, "tracked_J": tracked, "min_gap_J": min_gap,
+            "min_field_Vm": min_field, "crosses": bool(np.any(tracked < 0.0)),
+            "levels_between": k_bot - k_top - 1, "worst_overlap": worst,
+            "tracking_ok": ok, "bisections": nbis}
 
 
 def manifold_gap(mats: StarkMatrices, n_lower: int, n_upper: int,
                  fields_Vm: np.ndarray | Sequence[float], *,
-                 l_min_fan: int = 4,
-                 character_min: float = 0.5) -> np.ndarray:
-    """Track the top of the n_lower hydrogenic fan and the bottom of the
-    n_upper fan; return rows (field_Vm, gap_J = E_bot_upper - E_top_lower).
+                 l_min_fan: int = 4, character_min: float = 0.5,
+                 overlap_min: float = 0.9, max_bisect: int = 10,
+                 conv_check: bool = True, conv_n_widen: int = 1,
+                 conv_rel_gap: float = 0.05, conv_rel_field: float = 0.02,
+                 conv_abs_frac: float = 1e-3) -> ManifoldGap:
+    """Separation of the top of the n_lower fan and the bottom of the
+    n_upper fan over a field sweep (spec 07 §2.6; benchmark RS-07-08b).
 
-    Fan membership at fields_Vm[0] (which must lie where the fans are
-    resolved and NOT yet overlapping): summed eigenvector weight >
-    character_min on basis states with the manifold's n and l >= l_min_fan
-    (low-l alkali states carry the manifold's n label but sit manifolds
-    lower in energy — quantum defects; hence the l >= l_min_fan mask).
-    Thereafter the two states are followed by eigenvector overlap: alkali
-    edges ANTICROSS (gap stays > 0, min at the anticrossing field ~ F_IT,
-    benchmark RS-07-08b); hydrogen edges genuinely cross (gap changes
-    sign) — the core-effect regression of spec 07 §2.6.
+    This is the adjudicator of the core-effect regression — "alkali fan
+    edges ANTICROSS, hydrogen fan edges genuinely CROSS" — so it carries
+    the gates that claim demands. See ``ManifoldGap`` for the two reported
+    gap quantities and why only the adiabatic one is step-independent.
+
+    Refuses (IntegrityError) rather than reporting a conclusion it cannot
+    support:
+      * fan identification ambiguous, or the fans already overlap at
+        fields_Vm[0] (the crossing must be bracketed by the sweep);
+      * the minimum sits at a sweep endpoint;
+      * eigenvector tracking stayed ambiguous after ``max_bisect``
+        bisections (``tracking_ok`` False) — the ``crosses`` verdict would
+        then be a step-size artifact;
+      * conv_check=True and either re-run disagrees (below).
+
+    conv_check defaults to True (convergence is DEMONSTRATED, never
+    assumed — spec 07 §4.1/§2.6); pass False only for exploratory calls,
+    where ``converged`` then ships False. It runs the two demonstrations
+    spec 07 §2.6 requires and the audit §4 item 6 record:
+      1. HALVED FIELD STEP on the same basis — catches exactly the failure
+         this gate exists for: with a coarse step the tracker hops
+         diabatically across the anticrossing and reports the hydrogen-like
+         'edges cross' conclusion.
+      2. WIDENED BASIS, n_min - conv_n_widen .. n_max + conv_n_widen (same
+         l_max) — catches a window too narrow to hold the low-l intruders
+         that sit energetically between the two fans.
+    Both must reproduce ``crosses`` and ``levels_between`` exactly, and the
+    refined minimum within
+        |d gap| <= max(conv_rel_gap * gap, conv_abs_frac * manifold spacing)
+        |d field| <= conv_rel_field * field
+    The absolute branch exists because a genuine crossing has gap ~ 0, on
+    which a relative tolerance is meaningless. The manifold spacing is the
+    zero-field |E(n_upper) - E(n_lower)| of the two fan centres.
     """
     fields = np.asarray(fields_Vm, dtype=float)
-    lab = mats.labels
-    is_h = len(lab[0]) == 2
-    mask_lo = np.array([s[0] == n_lower and s[1] >= (0 if is_h else l_min_fan)
-                        for s in lab])
-    mask_hi = np.array([s[0] == n_upper and s[1] >= (0 if is_h else l_min_fan)
-                        for s in lab])
-    rows = []
-    v_top = v_bot = None
-    for f_now in fields:
-        w, v = _eig_at(mats, f_now)
-        if v_top is None:
-            w_lo = (v[mask_lo, :] ** 2).sum(axis=0)
-            w_hi = (v[mask_hi, :] ** 2).sum(axis=0)
-            i_lo = np.where(w_lo > character_min)[0]
-            i_hi = np.where(w_hi > character_min)[0]
-            if not (i_lo.size and i_hi.size):
+    if fields.ndim != 1 or fields.size < 3 or np.any(np.diff(fields) <= 0):
+        raise ValueError("fields_Vm must be a strictly increasing 1-D array "
+                         "with at least 3 points")
+    bas = mats.basis
+    base = _gap_run(mats, n_lower, n_upper, fields, l_min_fan, character_min,
+                    overlap_min, max_bisect)
+    if not base["tracking_ok"]:
+        raise IntegrityError(
+            f"fan-edge tracking is ambiguous (worst matched overlap "
+            f"{base['worst_overlap']:.3f} < {overlap_min} after "
+            f"{max_bisect} bisections): the cross/anticross verdict would be "
+            "a field-step artifact — refine fields_Vm or raise max_bisect "
+            "(spec 07 §2.6)")
+
+    # Manifold spacing = |E0(n_upper fan) - E0(n_lower fan)| at zero field,
+    # taken from the built matrices themselves (the highest-l state of each
+    # manifold, which carries a negligible quantum defect) — the natural
+    # scale for the absolute branch of the gap tolerance.
+    is_h = len(mats.labels[0]) == 2
+    l_cut = 0 if is_h else l_min_fan
+    e_lo = [e for s, e in zip(mats.labels, mats.e0_J)
+            if s[0] == n_lower and s[1] >= l_cut]
+    e_hi = [e for s, e in zip(mats.labels, mats.e0_J)
+            if s[0] == n_upper and s[1] >= l_cut]
+    spacing = abs(max(e_hi) - max(e_lo))
+
+    flags: list[str] = []
+    f_ion = classical_ionization_field_Vm(bas.n_max)
+    if fields.max() > f_ion:
+        flags.append(f"above_F_ion: max field {fields.max():.4g} V/m exceeds "
+                     f"F_ion(n={bas.n_max}) = {f_ion:.4g} V/m — bound-state "
+                     "map tracks resonance positions only (spec 07 §7.3)")
+
+    converged = False
+    record: dict = {"tol_gap_J": max(conv_rel_gap * base["min_gap_J"],
+                                     conv_abs_frac * spacing),
+                    "tol_field_rel": conv_rel_field,
+                    "manifold_spacing_hz": spacing / H}
+    if conv_check:
+        tol_gap = record["tol_gap_J"]
+        half = np.linspace(fields[0], fields[-1], 2 * fields.size - 1)
+        runs = {"step_halved": _gap_run(mats, n_lower, n_upper, half,
+                                        l_min_fan, character_min,
+                                        overlap_min, max_bisect)}
+        floor = 1 if bas.species == "H" else _species_floor(
+            _resolve_species(bas.species))
+        wide_basis = StarkBasis(bas.species, bas.mj,
+                                max(floor, bas.n_min - conv_n_widen),
+                                bas.n_max + conv_n_widen, bas.l_max)
+        wmats = build_stark_matrices(wide_basis,
+                                     n_top=bas.n_max + conv_n_widen)
+        runs["basis_wide"] = _gap_run(wmats, n_lower, n_upper, fields,
+                                      l_min_fan, character_min, overlap_min,
+                                      max_bisect)
+        for name, run in runs.items():
+            d_gap = abs(run["min_gap_J"] - base["min_gap_J"])
+            d_field = abs(run["min_field_Vm"] / base["min_field_Vm"] - 1.0)
+            record[name] = {
+                "min_gap_hz": run["min_gap_J"] / H,
+                "min_field_Vm": run["min_field_Vm"],
+                "crosses": run["crosses"],
+                "levels_between": run["levels_between"],
+                "tracking_ok": run["tracking_ok"],
+                "d_gap_hz": d_gap / H, "d_field_rel": d_field}
+            if not run["tracking_ok"]:
                 raise IntegrityError(
-                    f"fan identification failed at {f_now:.4g} V/m: start "
-                    "the sweep where the two manifold fans are resolved and "
-                    "not yet overlapping (spec 07 §2.6)")
-            i_top = i_lo[np.argmax(w[i_lo])]
-            i_bot = i_hi[np.argmin(w[i_hi])]
-        else:
-            i_top = int(np.argmax(np.abs(v_top @ v)))
-            i_bot = int(np.argmax(np.abs(v_bot @ v)))
-        v_top, v_bot = v[:, i_top], v[:, i_bot]
-        rows.append((f_now, w[i_bot] - w[i_top]))
-    return np.array(rows)
+                    f"manifold-gap convergence re-run '{name}' lost tracking "
+                    f"(worst overlap {run['worst_overlap']:.3f}) — refusing")
+            if run["crosses"] != base["crosses"]:
+                raise IntegrityError(
+                    f"manifold-gap convergence FAILED ({name}): the "
+                    f"cross/anticross verdict INVERTED (base crosses="
+                    f"{base['crosses']}, {name} crosses={run['crosses']}) — "
+                    "the physics conclusion is a discretization artifact, "
+                    "refusing (spec 07 §2.6; audit §4 item 6)")
+            if run["levels_between"] != base["levels_between"]:
+                raise IntegrityError(
+                    f"manifold-gap convergence FAILED ({name}): the number "
+                    f"of levels between the two fan edges changed "
+                    f"{base['levels_between']} -> {run['levels_between']}; "
+                    "the basis does not hold every state that lies between "
+                    "the manifolds (low-l intruders) — refusing")
+            if d_gap > tol_gap:
+                raise IntegrityError(
+                    f"manifold-gap convergence FAILED ({name}): the minimum "
+                    f"gap moved {d_gap / H:.4g} Hz (> {tol_gap / H:.4g} Hz = "
+                    f"max({conv_rel_gap:g} x gap, {conv_abs_frac:g} x "
+                    f"manifold spacing {spacing / H:.4g} Hz)) — refusing "
+                    "(spec 07 §2.6)")
+            if d_field > conv_rel_field:
+                raise IntegrityError(
+                    f"manifold-gap convergence FAILED ({name}): the field of "
+                    f"the minimum moved {d_field:.3%} "
+                    f"({base['min_field_Vm']:.4g} -> "
+                    f"{run['min_field_Vm']:.4g} V/m, allowed "
+                    f"{conv_rel_field:.1%}) — refusing (spec 07 §2.6)")
+        record["basis_wide"]["n_min"] = wide_basis.n_min
+        record["basis_wide"]["n_max"] = wide_basis.n_max
+        converged = True
+
+    return ManifoldGap(
+        mats=mats, n_lower=n_lower, n_upper=n_upper, fields_Vm=fields,
+        gap_J=base["gap_J"], gap_tracked_J=base["tracked_J"],
+        min_gap_J=base["min_gap_J"], min_field_Vm=base["min_field_Vm"],
+        crosses=base["crosses"], levels_between=base["levels_between"],
+        character_top=base["w_top"], character_bot=base["w_bot"],
+        worst_overlap=base["worst_overlap"], tracking_ok=base["tracking_ok"],
+        bisections=base["bisections"], manifold_spacing_J=spacing,
+        converged=converged, convergence=record, flags=flags)
 
 
 # ---------------------------------------------------------------------------

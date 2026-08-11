@@ -10,8 +10,9 @@
 > (§3.3). The original PRA table was not directly consulted (paywalled). The Kaulakys (1995) formulas
 > were transcribed from the **full paper text held locally in this repo** (`kaulakys_text.txt`,
 > arXiv:physics/9610018). Every equation in this document was additionally **executed numerically
-> this session** (harness: scratchpad `verify_radial_02*.py`, to be ported to
-> `tests/test_spec02_benchmarks.py`): Numerov vs. exact hydrogen, Gordon-exact vs. direct
+> this session** (harness: scratchpad `verify_radial_02*.py`, since ported to
+> `tests/test_radial.py` + `tests/test_dipoles.py`, not to the `tests/test_spec02_benchmarks.py`
+> name used in earlier drafts — §6): Numerov vs. exact hydrogen, Gordon-exact vs. direct
 > integration, Kaulakys vs. Gordon, model-potential vs. Coulomb-approximation for Rb and Cs at
 > n = 20–60. Measured agreement numbers quoted below are from those runs.
 
@@ -52,8 +53,12 @@ For `u(r) = r·R(r)` (so ∫₀^∞ u² dr = 1):
 u''(r) = [ 2μ (V_lj(r) − E) + l(l+1)/r² ] u(r)                                        (2.1)
 ```
 
-- `μ` — reduced mass in units of mₑ: `μ = (M − mₑ)/M`, M = atomic mass. (Rb-85: μ = 1 − 6.46e-6;
-  effect on MEs ≤ 1e-5 relative — include it, but it is below every tolerance in §6.)
+- `μ` — reduced mass in units of mₑ. This doc's original ion-core form `μ = (M − mₑ)/M` is
+  **superseded by ruling R-10** (doc 00, binding): the single code-level definition is
+  `μ = 1/(1 + mₑ/M) = R_M/R_∞`, shared with doc 01's energies. M = atomic mass. The two differ by
+  O((mₑ/M)²) = 4.2e-11 (measured, Rb-85) — below every tolerance here, but one definition, not two.
+  (Rb-85: μ = 1 − 6.46e-6 under either; effect on MEs ≤ 1e-5 relative — include it, but it is below
+  every tolerance in §6.)
 - `E = −μ/(2ν²)` Hartree with ν = n − δ_nlj from doc 01 (measured energies; **E is an input, never
   an eigenvalue solved for here** — that is what makes inward integration + truncation correct).
 
@@ -133,17 +138,41 @@ catastrophically as ν grows (relative error vs. analytic hydrogen u_nl, classic
 
 | ν | 10 | 15 | 20 | 25 | 28 | 30 | 35 | 40 |
 |---|----|----|----|----|----|----|----|----|
-| rel. err | 5e-13 | 7e-11 | 1.5e-8 | 5.7e-6 | 1.5e-4 | 8.2e-4 | 1.7e-1 | 4.3e+1 |
+| rel. err (original session harness) | 5e-13 | 7e-11 | 1.5e-8 | 5.7e-6 | 1.5e-4 | 8.2e-4 | 1.7e-1 | 4.3e+1 |
+| rel. err (**scipy 1.17.1**, shipped) | 6.2e-13 | 1.5e-10 | **3.5e-8** | **5.5e-6** | 1.9e-4 | 1.8e-3 | 0.49 | 93 |
+
+The second row is the binding one: hyperu accuracy is **scipy-version-dependent**, so the table is
+regenerated on the *installed* scipy by `rydsim.radial.hyperu_hydrogen_error(ν, l)` and asserted at
+test time (`tests/test_radial.py::test_hyperu_fence_r4_binding_form`, audit R4). The two rows differ
+by up to ~2× because they were measured on different scipy builds — do not treat either as a
+constant of nature; re-measure before moving the §7.3 fence.
 
 Therefore the **production evaluation of Method B is numerical**: run the *same* Numerov machinery
 (2.5)–(2.7) with `V(r) = −1/r` exactly (no model potential, no SO), E = −μ/(2ν²), same grid and
 divergence guard, unit-normalized numerically. This is mathematically the same solution as (2.8)
-— identical ODE, identical decaying boundary condition — evaluated stably; the Seaton analytic
-normalization and the numerical unit norm agree because ∫u² dr for (2.8) equals 1 up to the
-(negligible, truncated) core region: verified for integer ν against analytic hydrogen to ≤2e-13
-(ν ≤ 10). The closed form (2.8)/(2.9) with `hyperu` **must still be implemented** and used as a
-pointwise cross-check for ν ≤ 20 (benchmark B12) — that is what makes Method B genuinely
-Numerov-code-independent at low ν while remaining stable at high ν.
+— identical ODE, identical decaying boundary condition — evaluated stably. The closed form
+(2.8)/(2.9) with `hyperu` **must still be implemented** and used as a pointwise cross-check for
+ν ≤ 20 (benchmark B12) — that is what makes Method B genuinely Numerov-code-independent at low ν
+while remaining stable at high ν.
+
+**Normalization equivalence is an INTEGER-ν statement (corrected 2026-08-10).** At integer ν the
+Seaton analytic normalization and the numerical unit norm agree because ∫u² dr for (2.8) equals 1
+up to the (negligible, truncated) core region: verified for integer ν against analytic hydrogen to
+≤2e-13 (ν ≤ 10). That measurement is the *only* support the claim ever had, and it does **not**
+extend to the QDT case Method B actually ships. At **non-integer ν the Whittaker function is
+irregular at the origin** (W ~ r^{−l} as r → 0, §4.4 pitfall 6), so the numerically unit-normalized
+Numerov solution and the analytically normalized closed form differ by a **cutoff-dependent scale**:
+
+| measured abs(scale) − 1, ν = 10.5, r_inner = 1e-4 a₀ | l = 0 | l = 1 | l = 2 |
+|---|---|---|---|
+| offset | 7.3e-6 | 6.6e-4 | 3.0e-3 |
+
+Moving `r_inner` 1e-4 → 1 a₀ moves the l = 0 offset to **3.7e-5**, which is what identifies the
+offset as a cutoff artifact rather than an error in either method. The **shape** — which is what the
+cross-check exists to test — agrees to **3e-11** either way. Consequently a non-integer-ν
+cross-check must compare shape after a fitted scale and pin the norm offset *separately*, never fold
+one into the other (§6 B12/B12b). Method B's own numbers are unaffected: it is unit-normalized
+numerically, and the Seaton prefactor N never enters the shipped path.
 
 Method B is *independent of the §3 model-potential parameters* — its only inputs are ν and l. The
 A−B spread isolates exactly the core-model contribution: **measured A−B ≤ 4e-6 relative for
@@ -258,9 +287,33 @@ Source & confidence: as §3.1 (both transcriptions agree digit-for-digit on ever
 ### 3.3 † The one transcription discrepancy — Rb a₄(l=1)
 
 ARC master has `−0.8163314` (7 significant digits); ryd-numerov has `−0.81633314` (8 digits, matching
-the digit count of every other table entry). The two differ by 2.5e-6 relative. **RydSim adopts
-−0.81633314** (ryd-numerov reading, consistent formatting) and records the alternative. Impact
-bound: δa₄ = 8e-8 perturbs Z₁(r) by < 4e-8 at its maximum → effect on any ME far below every
+the digit count of every other table entry). The two differ by **2.13e-6 relative** (this paragraph
+previously said 2.5e-6; recomputed 2026-08-10 as 1.74e-6 / 0.81633314 = 2.1315e-6 — the figure moves,
+the conclusion does not). **RydSim adopts −0.81633314** (ryd-numerov reading, consistent formatting)
+and records the alternative.
+
+**Impact bound (CORRECTED 2026-08-10).** The figures previously printed here — "δa₄ = 8e-8 perturbs
+Z₁(r) by < 4e-8" — were arithmetically wrong, by 21.8× and 6.3× respectively, and visibly
+inconsistent with the *relative* statement in the same paragraph (a ~2e-6 relative difference on
+a₄ ≈ −0.816 is δa₄ ≈ 1.7e-6, not 8e-8 — that mismatch is what exposed the error). The re-derived
+bound is:
+
+```
+|δa₄| = |0.81633314 − 0.8163314| = 1.74e-6            (2.13e-6 relative)
+δZ₁(r) = |δa₄| r² e^{−a₂(l=1) r},  maximal at r = 2/a₂ = 1.04 a₀ (r² e^{−a₂ r} = 0.145586)
+⇒ max |δZ₁| = 2.53e-7
+```
+
+This is shipped verbatim as `rydsim.radial.A4_L1_NOTE` and both figures are regenerated from the two
+transcriptions at test time (`tests/test_radial.py::test_a4_l1_impact_bound_is_reproducible`):
+
+> Rb a4(l=1): adopted -0.81633314 (ryd-numerov); ARC reads -0.8163314; last digit UNVERIFIED,
+> |delta a4| = 1.74e-6 perturbs Z_1(r) by <= 2.53e-7 (max at r = 1.04 a0) (spec 02 §3.3 / audit R20)
+
+The physical conclusion is unchanged, and is now stated on the quantities that actually move rather
+than on Z₁ alone: adopting the ARC reading instead shifts the Rb 50S→50P consensus ME by **6.5e-14**
+relative and the reproduced Rb P-series quantum defect (`model_potential_defect` — the one quantity
+in this module that *is* sensitive to the tables, §6 note) by **4.7e-8** — both far below every
 tolerance in §6. Anyone with PRA 49, 982 Table I in hand should close this out and update this
 paragraph. Confidence of this single digit: **UNVERIFIED (two secondary sources disagree)** —
 numerically irrelevant, flagged for honesty.
@@ -326,7 +379,8 @@ report the three-method spread (it will honestly widen; e.g. Rb 50D→51F, ME = 
 
 | # | Pitfall | Rule |
 |---|---|---|
-| 1 | `hyperu` precision collapse (table §2.4) | never call hyperu-Whittaker for ν > 25; use pure-Coulomb Numerov as Method B production path |
+| 1 | `hyperu` precision collapse (table §2.4) | never call hyperu-Whittaker for **ν > 20** (`rydsim.radial.WHITTAKER_NU_MAX`; `whittaker_u` raises `IntegrityError`) — fence moved 25 → 20 by integrator ruling, §7.3; use pure-Coulomb Numerov as Method B production path |
+| 1b | `hyperu` returns NaN for non-integer ν ≳ 11 *inside* the classical region (scipy 1.17.1) | `whittaker_u` refuses (`IntegrityError`) if **any** requested sample is non-finite — an all-NaN slice would let a `np.allclose`-style B12 pass and silently disable the only Numerov-independent cross-check |
 | 2 | Gordon at n = n′ | closed form (2.11); the general formula divides by zero |
 | 3 | Gordon float cancellation risk | reference path = exact `Fraction` arithmetic; scipy `hyp2f1` fast path allowed only with a test pinning it to the rational path (measured ≤6e-14, n ≤ 70, Δn ≤ 20) |
 | 4 | Kaulakys s → 0 | branch to R = (3/2)ν²e for \|s\| < 1e-4 (removes 0/0 in D_p, sinc terms) |
@@ -411,7 +465,30 @@ def radial_me_gordon(n1: int, l1: int, n2: int, l2: int) -> float:
 
 def whittaker_u(nu: float, l: int, r: np.ndarray) -> np.ndarray:
     """Seaton-normalized QDT orbital u(r), eqs. (2.8)-(2.9) via scipy.special.hyperu.
-    Contract: raises ValueError if nu > 25 (documented precision collapse, doc 02 §2.4)."""
+    VALIDATION INSTRUMENT ONLY — no production caller (Method B is coulomb_wavefunction).
+    Contract: raises IntegrityError if nu > WHITTAKER_NU_MAX = 20.0 (documented precision
+    collapse, doc 02 §2.4/§7.3) or if ANY returned sample is non-finite (§4.4 pitfall 1b)."""
+
+WHITTAKER_NU_MAX: float = 20.0   # normative fence, doc 02 §7.3 (was 25 before 2026-08-10)
+
+def hyperu_hydrogen_error(nu: int, l: int = 0, n_samples: int = 300) -> float:
+    """One row of the §2.4 table on the INSTALLED scipy: max relative deviation of the
+    hyperu-Whittaker orbital from analytic hydrogen over [0.2, 1.8] nu^2. Integer nu only.
+    The fence is re-measured with this, never assumed (audit R4)."""
+
+def coulomb_wavefunction(nu: float, l: int, *, mu_mass: float = 1.0, h: float = 1e-3,
+                         r_inner: float = 1e-4,
+                         r_outer: float | None = None) -> RadialSolution:
+    """Species-independent Method-B engine (V = -1/r, arbitrary real nu > l): the hydrogen
+    benchmarks B1-B7/B13-B14 and the B12 cross-check run through this + radial_matrix_element.
+    r_inner = 1e-4 a0 is required to reach B1/B7's stated measurements (§6 note); alkali
+    Method B goes through radial_wavefunction(method="coulomb") and keeps r_i = alpha_c^(1/3)."""
+
+def model_potential_defect(species: AtomParams, n: int, l: int, j: float, *,
+                           h: float = 4e-3, r_min: float = 1e-6, include_so: bool = True,
+                           params: ModelPotentialParams | None = None) -> float:
+    """Solve the MSD94 potential as a genuine EIGENVALUE problem and return the predicted
+    quantum defect. This — not the A-vs-B spread — is what guards the §3 tables (§6 note)."""
 
 @dataclass(frozen=True)
 class RadialMEResult:
@@ -435,24 +512,25 @@ before the Numerov loop; cache `RadialSolution`s keyed on `(species, n, l, j, h)
 
 ---
 
-## 6. Validation benchmarks (→ `tests/test_spec02_benchmarks.py`)
+## 6. Validation benchmarks (→ `tests/test_radial.py`; B15 in `tests/test_dipoles.py`)
 
 All MEs in a₀, magnitudes. "Measured" = this session's harness, spec-default grid unless noted.
 
 | ID | Quantity | Expected | Tolerance | Source | Confidence |
 |----|----------|----------|-----------|--------|------------|
-| B1 | H Numerov R(1s→2p) | 1.2902662020 (=128√6/243) | rel ≤ 1e-7 (measured 4e-12) | Gordon/B&S §63; 3 independent routes | VERIFIED |
+| B1 | H Numerov R(1s→2p) | 1.2902662020 (=128√6/243) | rel ≤ 1e-7 (measured 4e-12; 4.7e-12 as shipped — note ‡) | Gordon/B&S §63; 3 independent routes | VERIFIED |
 | B2 | H Numerov R(2s→3p) | 3.0648154066 | rel ≤ 1e-7 (measured 8e-13) | exact-rational Gordon ≡ quad | VERIFIED |
 | B3 | H Numerov R(2p→3d) | 4.7479916115 | rel ≤ 1e-7 | same | VERIFIED |
 | B4 | H Numerov R(10s→11p) | 40.4352023233 | rel ≤ 1e-7 | same | VERIFIED |
 | B5 | H Numerov \|R(50s→50p)\| | 3749.2499249850 | rel ≤ 1e-6 (measured 5.5e-10) | closed form (3/2)n√(n²−l²) | VERIFIED |
 | B6 | H Numerov R(50s→51p) | 851.4038694455 | rel ≤ 1e-6 (measured 1.5e-8) | exact-rational Gordon | VERIFIED |
-| B7 | Numerov global order: err(h=0.01)/err(h=0.005) on B1 | 16 (h⁴) | ∈ [8, 32] (measured 16.2) | classic Numerov analysis | VERIFIED |
+| B7 | Numerov global order: err(h=0.01)/err(h=0.005) on B1 | 16 (h⁴) | ∈ [8, 32] (measured 16.2; 16.29 as shipped — note ‡) | classic Numerov analysis | VERIFIED |
 | B8 | Rb 50S₁/₂→50P₃/₂: A vs B spread | ≤ 1e-4 rel | measured 2.0e-6; also 51P/49P/60S pairs ≤ 4.2e-6; n=20 pair 4.2e-5 | this-session cross-method | VERIFIED |
 | B9 | Rb/Cs n≈50 pairs: A vs Kaulakys spread | ≤ 5e-3 rel (≤ 1e-2 for MEs < 50 a₀) | measured 1e-6…2e-3 (worst: 50D₅/₂→51F₇/₂) | this-session cross-method | VERIFIED |
 | B10 | Rb nS₁/₂→nP₃/₂ scaling: \|R\|/(ν ν′), n ∈ {40…70} | 1.13 | ∈ [1.10, 1.16] (measured 1.1312 @50, 1.1295 @60) | computed; coefficient LITERATURE-CONSISTENT with 1.5ν² × defect suppression | VERIFIED (as computed invariant) |
 | B11 | Cs 50S₁/₂→50P₃/₂: \|R\|/(ν ν′); A−B | 1.1304; ≤1e-4 | measured 1.1304; 2.8e-6 | this-session | VERIFIED (defects: LITERATURE-RECALL) |
-| B12 | hyperu-Whittaker vs Method B, pointwise u(r), classical region, ν ≤ 20 | equal | rel ≤ 1e-6 (measured ≤1.5e-8 @ ν=20) | Seaton norm self-check | VERIFIED |
+| B12 | hyperu-Whittaker vs Method B, pointwise u(r), classical region, **integer ν ≤ 20** | equal | rel ≤ 1e-6 (measured on scipy 1.17.1: 2.6e-11 @ ν=10, 2.4e-10 @ 15, 5.0e-8 @ 20; the "≤1.5e-8 @ ν=20" printed here before 2026-08-10 does **not** reproduce — the *tolerance* is unchanged, only the check value) | Numerov-independent closed form, §2.4 | VERIFIED |
+| B12b | same at **non-integer ν** — the QDT case Method B actually ships: shape compared after a fitted scale, Seaton-vs-unit-norm offset pinned *separately* | shape equal; offset (ν = 10.5, r_inner = 1e-4 a₀) 7.3e-6 (l=0), 6.6e-4 (l=1), 3.0e-3 (l=2) | shape rel ≤ 1e-6 (measured ≤3.0e-11); offset reproduced to ±25 % | §2.4 — W irregular at origin ⇒ cutoff-dependent scale (r_inner → 1 a₀ moves the l=0 offset to 3.7e-5) | VERIFIED |
 | B13 | Kaulakys vs Gordon, hydrogen ν=50, Δν=1,2 | equal | rel ≤ 2e-4 (measured 4.4e-5, 9.9e-5) | §2.5 vs §2.6 | VERIFIED |
 | B14 | outer-cutoff adequacy: B6 at 2n(n+15) vs 2n(n+25) | equal | rel ≤ 5e-8 (measured 1.3e-8) | grid study | VERIFIED |
 | B15 | Rb 5S₁/₂→5P₃/₂ model-potential radial ME | 5.57 | ∈ [5.45, 5.70] (regression band; computed 5.569 with ν from measured term energies) | this-session; **known +≈8% bias vs. experiment-derived ≈5.18** (Steck→doc 03 chain) | computed VERIFIED; bias LITERATURE-RECALL |
@@ -462,7 +540,49 @@ pytest structure: B1–B7, B12–B14 are absolute (hydrogen/analytic — no reca
 are *invariants of the shipped code + doc 01 data* (re-derive ν from doc 01 at test time; if doc 01
 values move within their error bars these stay inside tolerance); B15 is a bias-documentation
 regression (asserts the bias is present AND stable, so nobody mistakes model-potential D-line
-dipoles for accurate ones).
+dipoles for accurate ones). **Where they live:** `tests/test_radial.py` (B1–B14, B16) and
+`tests/test_dipoles.py` (B15, with the D-line closure); the `tests/test_spec02_benchmarks.py` file
+named above and in the header note was never created — this pointer is corrected, not the plan.
+
+**Note ‡ — B1–B6 run through the engine, and that requires `r_inner = 1e-4 a₀`.** B1–B6 are labelled
+"H **Numerov** R(…)" and are now implemented that way: `coulomb_wavefunction` → the same scaled
+equation (2.5), divergence guard, norm (2.6) and ME weight (2.7) that every shipped alkali number
+goes through → `radial_matrix_element`, with exact-rational Gordon (§2.6) as truth. Likewise B7
+(global order) and B12 (Whittaker cross-check). This is not covered by the A-vs-B spread: Methods A
+and B share the identical ODE solver, grid, guard and quadrature, so a systematic error in the
+scaled equation cancels exactly in A − B.
+
+The stated measurements only reproduce at an inner cutoff of `r_inner ≈ 1e-4 a₀`, which is now the
+`coulomb_wavefunction` default (it changed from 1e-2 on 2026-08-10; it is a pure hydrogen-benchmark
+knob with no production caller — the alkali grids still start at r_i = α_c^{1/3}, §4.1). Measured
+|rel| vs. exact Gordon at h = 1e-3:
+
+| r_inner | B1 | B2 | B3 | B4 | B5 | B6 | B7 ratio |
+|---|---|---|---|---|---|---|---|
+| 1e-2 (old default) | **6.57e-7** | 8.2e-8 | 1.0e-11 | 6.3e-10 | 5.5e-10 | 1.9e-9 | **1.02** |
+| 1e-3 | 6.6e-10 | 9.4e-11 | 1.3e-11 | 9.2e-11 | 5.6e-10 | 1.3e-9 | — |
+| **1e-4 (default)** | **4.7e-12** | 2.9e-12 | 2.7e-11 | 2.7e-11 | 5.5e-10 | 1.9e-9 | **16.29** |
+| 1e-5 | 6.7e-13 | 1.6e-11 | 5.4e-8 | 5.2e-11 | 5.5e-10 | 1.9e-9 | — |
+
+At the old 1e-2 default B1 measures 6.57e-7 — 6.6× **outside** B1's own 1e-7 tolerance — and B7's
+convergence ratio collapses to 1.02, i.e. the h⁴ order test had no teeth. Below 1e-4 the l = 2 row
+(B3) degrades because the centrifugal term (2l+1/2)(2l+3/2)/x² drives h²g/12 toward 1 near the inner
+edge, where the Numerov auxiliary f = 1 − h²g/12 loses meaning. **No §6 tolerance was changed to
+accommodate any of this, and none may be** — the fix was the grid knob, not the bar.
+
+**Note — what actually guards the §3 parameter tables.** It is **not** the A-vs-B spread (B8).
+Everywhere else in this doc the energy is an *input* from doc 01's measured defects, so the model
+potential only shapes the wavefunction inside the divergence-guard truncation radius: doubling Rb
+a₃(l=0) moves the 50S→50P consensus ME by 4e-7 relative (A−B spread 2.02e-6 → 2.40e-6, 40× inside
+the B8 ceiling) and flipping the sign of the UNVERIFIED Rb a₄(l=1) moves it by 6e-8 — the suite
+stays green under both. The quantity MSD94 was *fitted* to is the eigenvalue, so that is what is
+asserted: `rydsim.radial.model_potential_defect` solves the model potential as a genuine bound-state
+problem and `tests/test_radial.py::test_msd94_reproduces_measured_quantum_defects` requires it to
+reproduce doc 01's measured quantum defects (l-centroids at n = 12, guard band 1.2e-2; measured
+residuals Rb S +3.25e-4, P +2.18e-3, D +9.98e-4, F +8.47e-4; Cs S +5.64e-4, P +5.38e-3, D +1.32e-3,
+F −1.27e-4), with a companion test that pins deliberate parameter corruptions *outside* that band.
+This supersedes the mitigation recorded in `00-integrity-audit.md` R20 — see that document's
+parallel change.
 
 ---
 
@@ -478,8 +598,40 @@ dipoles for accurate ones).
 2. **Non-eigenvalue truncation.** Because E is the measured energy, the model-potential solution
    diverges at small r and is truncated (§4.2). Wavefunctions are unreliable inside r ≈ r_cut;
    any observable weighted toward r ≲ 5 a₀ (contact terms, hyperfine constants) is out of scope.
-3. **Whittaker path ν ≤ 25 only** via scipy.special.hyperu (measured collapse, §2.4); production
+3. **Whittaker path ν ≤ 20 only** via scipy.special.hyperu (measured collapse, §2.4); production
    Method B is the pure-Coulomb Numerov equivalent.
+
+   > **INTEGRATOR RULING (2026-08-10): the fence moves 25 → 20 — STRICTER.** Amends this item and
+   > `00-integrity-audit.md` refusal #6, both of which read ν > 25; refusal #6 additionally
+   > mis-states the exception as `ValueError`. Shipped as `rydsim.radial.WHITTAKER_NU_MAX = 20.0`;
+   > `whittaker_u` raises **`IntegrityError`** (the house-rule type for a refusal-to-guess), not
+   > `ValueError`.
+   >
+   > *Justification — the fence must sit where the method meets its OWN contract.* Benchmark B12
+   > demands `rel ≤ 1e-6` pointwise. Measured on the installed scipy 1.17.1 via
+   > `hyperu_hydrogen_error` (§2.4, second row):
+   >
+   > | ν | 12 | 20 | 25 | 28 | 30 | 35 | 40 |
+   > |---|----|----|----|----|----|----|----|
+   > | rel. err | 7.4e-12 | **3.5e-8** | **5.5e-6** | 1.9e-4 | 1.8e-3 | 0.49 | 93 |
+   >
+   > The band 20 < ν ≤ 25 measures up to 5.7e-6 — **5.7× the tolerance B12 asserts** (worst over
+   > l = 0..2 at ν = 25: 5.48e-6, 4.71e-6, 5.72e-6; 3.5e-8 at ν = 20) — and
+   > it rises to 0.49 by ν = 35. A `UserWarning` was judged insufficient: this is a number a
+   > cross-check will *trust*, and a validation instrument running outside its claimed accuracy is
+   > exactly the "plausible but wrong" hazard the house rule exists to stop.
+   >
+   > *The fence costs no physics.* `whittaker_u` is a **validation instrument only** — nothing on
+   > the production Rydberg path calls it (grep-verified: Method B in production is the pure-Coulomb
+   > Numerov `coulomb_wavefunction`; the sole callers are the B12 and audit-R4 tests). For
+   > deliberate out-of-contract work — the R4 error table itself — `_whittaker_u_unguarded` remains
+   > available in-module, private and explicitly named.
+   >
+   > *Re-measure, do not assume.* hyperu accuracy is scipy-version-dependent; the fence's location
+   > is asserted against the installed scipy at test time (audit R4 binding form), including a lower
+   > guard that fires if a future scipy makes ν = 25 better than 1e-7 (i.e. the fence has become
+   > over-conservative and should be revisited rather than silently kept).
+
 4. **Kaulakys degrades for small MEs and low ν**: cancellation-suppressed elements (e.g. nD→(n+1)F,
    \|R\| ~ 10 a₀) show 2e-3 method spread; ν ≲ 10 shows ~1e-3. It also assumes k = 1 (dipole) only.
 5. **Orthogonality is not exact.** Truncation + fixed-E integration break strict ⟨ν,l|ν′,l⟩ = δ
@@ -498,4 +650,7 @@ dipoles for accurate ones).
 ---
 
 *GreyNOC · RydSim spec 02 · 2026-08-10 · methods verified this session; harness →
-`tests/test_spec02_benchmarks.py`*
+`tests/test_radial.py` (+ `tests/test_dipoles.py` for B15). Amended 2026-08-10 post-audit: §2.4
+integer-ν scoping of the norm equivalence, §3.3 corrected a₄(l=1) impact bound, §7.3 integrator
+ruling moving the hyperu fence 25 → 20, §6 B12/B12b split + r_inner and MSD94-guard notes. No §6
+tolerance was changed.*
