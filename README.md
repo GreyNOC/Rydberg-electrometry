@@ -3,7 +3,7 @@
 Scientifically rigorous, calibratable simulation of Rydberg-atom RF
 electrometry: ladder EIT / Autler–Townes spectroscopy in hot vapor and cold
 atoms, superheterodyne receiver transduction, and full noise/sensitivity
-budgets — built to produce **reproducible findings**, not plots.
+budgets.
 
 > **House rule:** *reproducible or it didn't happen.* Every number this
 > simulator emits is convention-stamped, provenance-tagged, and backed by a

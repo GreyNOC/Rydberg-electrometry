@@ -351,50 +351,29 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
-def _console_was_created_for_us() -> bool:
-    """True when this process owns its console, i.e. it was double-clicked.
-
-    Windows gives a GUI-launched console app a fresh console with only that
-    process attached; a program started from an existing terminal shares
-    that terminal with its parent shell. GetConsoleProcessList returning 1
-    is therefore the standard double-click test. Any failure answers False
-    (assume a real terminal) — the fallback must never hijack a scripted run.
-    """
-    if not sys.platform.startswith("win"):
-        return False
-    try:
-        import ctypes
-
-        buf = (ctypes.c_uint * 4)()
-        n = ctypes.windll.kernel32.GetConsoleProcessList(buf, 4)
-        return n == 1
-    except Exception:
-        return False
-
-
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     effective = sys.argv[1:] if argv is None else argv
 
     if not effective:
-        # A portable .exe gets double-clicked — that is the whole point of
-        # shipping one. Bare argparse answers "error: the following
-        # arguments are required: command", exits 2, and Windows tears the
-        # console down instantly, so the binary appears to "error out
-        # immediately" with nothing readable. Give the double-click the GUI
-        # (what a user reaching for a desktop app wants), and give a real
-        # terminal the help text rather than an error.
-        if _console_was_created_for_us():
-            try:
-                return cmd_gui(None)
-            except Exception as exc:                     # pragma: no cover
-                print(f"{BANNER}\n\nCould not start the GUI: {exc}\n",
-                      file=sys.stderr)
-                parser.print_help()
-                input("\nPress Enter to close...")       # keep the window up
-                return 1
+        # No arguments: show help and exit 0 rather than argparse's
+        # "the following arguments are required" + exit 2.
+        #
+        # This binary deliberately does NOT try to detect a double-click and
+        # launch the GUI itself. An earlier version probed console ownership
+        # (GetConsoleProcessList) to do exactly that; the probe answers
+        # differently depending on how the process was started, so on a real
+        # Explorer launch it fell through to this help text inside a console
+        # Windows then destroyed instantly — the "terminal flashes and
+        # disappears" report. Guessing the launch context is the bug.
+        # The portable bundle ships a separate WINDOWED binary (RydSim.exe,
+        # rydsim.gui.__main__) as the double-click target, which cannot make
+        # that mistake because it has no console to lose.
         print(BANNER)
         parser.print_help()
+        if getattr(sys, "frozen", False):
+            print("\nTip: double-click RydSim.exe for the graphical "
+                  "interface; this binary is the command-line tool.")
         return 0
 
     args = parser.parse_args(effective)
