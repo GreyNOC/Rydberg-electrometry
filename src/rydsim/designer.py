@@ -33,8 +33,32 @@ from .provenance import IntegrityError
 __all__ = [
     "DesignAxis", "DesignSpace", "SurrogateReport", "Surrogate",
     "sample_space", "run_oracle", "fit_surrogate", "active_learn",
-    "confirm_frontier", "frontier_summary",
+    "confirm_frontier", "frontier_summary", "frontier_recovery",
+    "require_sklearn",
 ]
+
+_SKLEARN_HINT = (
+    "the DESIGNER search layer needs scikit-learn, which is an optional "
+    "extra so the physics engine, CLI and GUI install without it.\n"
+    "  Install it with:  pip install 'rydsim[designer]'\n"
+    "Note the oracle itself (rydsim.objective.evaluate) and the exact "
+    "physics engine do NOT need scikit-learn — only the surrogate and the "
+    "feasibility classifier that decide WHERE to spend oracle calls."
+)
+
+
+def require_sklearn():
+    """Import scikit-learn or raise with the install hint.
+
+    Kept explicit rather than letting a bare ImportError escape: a missing
+    optional extra should name itself, not surface as a stack trace from
+    inside a fitting routine.
+    """
+    try:
+        import sklearn  # noqa: F401
+    except ImportError as exc:  # pragma: no cover - environment-dependent
+        raise ImportError(_SKLEARN_HINT) from exc
+    return sklearn
 
 
 # ---------------------------------------------------------------------------
@@ -232,6 +256,7 @@ def fit_surrogate(space: DesignSpace, evals: Sequence[Evaluation],
     Modeling log10 is deliberate: NEF spans orders of magnitude across the
     space, and relative error is the meaningful metric for a sensitivity.
     """
+    require_sklearn()
     from sklearn.gaussian_process import GaussianProcessRegressor
     from sklearn.gaussian_process.kernels import (ConstantKernel, Matern,
                                                   WhiteKernel)
@@ -301,6 +326,7 @@ def _feasibility_classifier(space: DesignSpace, evals: Sequence[Evaluation],
     budget on designs that raise IntegrityError. Measured on the Rb D5/2
     space: 10/40 feasible per round unguarded.
     """
+    require_sklearn()
     from sklearn.ensemble import RandomForestClassifier
 
     y = np.array([1 if ev.feasible else 0 for ev in evals])

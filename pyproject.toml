@@ -4,20 +4,31 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "rydsim"
-version = "0.1.0"
+version = "0.2.0"
 description = "GreyNOC RydSim — scientifically validated Rydberg-atom electrometry simulator (EIT/Autler-Townes, Stark, superheterodyne) with calibration-study findings pipeline"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
 authors = [{ name = "GreyNOC" }]
 dependencies = [
-    "numpy>=1.26",
+    # np.trapezoid (used on the Doppler, EIT, objective and radial paths)
+    # is NumPy 2.0+. The old >=1.26 floor was factually wrong: a resolver
+    # landing on 1.26 raises AttributeError inside the core physics.
+    "numpy>=2.0",
     "scipy>=1.11",
     "matplotlib>=3.8",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "pytest-xdist>=3"]
+# sympy is the exact-symbolic ORACLE the Wigner tests check the float and
+# exact-rational paths against — a test-only dependency by design: shipping
+# an oracle alongside the thing it validates would defeat the point.
+dev = ["pytest>=8", "pytest-xdist>=3", "sympy>=1.12"]
+# The DESIGNER search layer (rydsim.designer) needs scikit-learn for the GP
+# surrogate and the feasibility classifier. Kept optional so the physics
+# engine, CLI and GUI install without it; rydsim.designer raises a clear
+# ImportError naming this extra if it is missing.
+designer = ["scikit-learn>=1.4"]
 
 [project.scripts]
 rydsim = "rydsim.cli:main"

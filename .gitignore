@@ -16,3 +16,7 @@ data/cache/
 # Third-party paper text kept locally for spec work — not ours to redistribute.
 # (kaulakys_text.txt = arXiv:physics/9610018; the physics lives in docs/spec/02.)
 kaulakys_text.txt
+
+# Build outputs and the locked build virtualenv
+.venv-build/
+build-log.txt

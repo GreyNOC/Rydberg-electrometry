@@ -31,7 +31,7 @@ from ..superhet import min_detectable_field, optimize_lo
 from . import theme
 
 ROOT_DIR = pathlib.Path(__file__).resolve().parents[3]
-FINDINGS_DIR = ROOT_DIR / "findings"
+from ..paths import findings_dir, is_frozen
 
 
 class ParamForm(ttk.Frame):
@@ -109,7 +109,7 @@ class App(tk.Tk):
         bar.pack(fill="x", side="bottom", padx=8, pady=4)
         self.status = ttk.Label(bar, text="ready", style="Tagline.TLabel")
         self.status.pack(side="left")
-        ttk.Label(bar, text=f"v{__version__} · findings -> {FINDINGS_DIR.name}/",
+        ttk.Label(bar, text=f"v{__version__} · findings -> {findings_dir()}",
                   style="Tagline.TLabel").pack(side="right")
 
     def set_status(self, text: str, error: bool = False):
@@ -293,8 +293,9 @@ class App(tk.Tk):
             return
         cfg, res = self._last_at
         f = at_finding(cfg, res)
-        FINDINGS_DIR.mkdir(exist_ok=True)
-        base = FINDINGS_DIR / f"at-measurement-{f.config_hash}"
+        out_dir = findings_dir()
+        out_dir.mkdir(parents=True, exist_ok=True)
+        base = out_dir / f"at-measurement-{f.config_hash}"
         base.with_suffix(".json").write_text(f.to_json(), encoding="utf-8")
         base.with_suffix(".md").write_text(f.to_markdown(), encoding="utf-8")
         self.set_status(f"finding written: {base.name}.md")
@@ -453,8 +454,9 @@ class App(tk.Tk):
 
     def _refresh_findings(self):
         self.find_list.delete(0, "end")
-        FINDINGS_DIR.mkdir(exist_ok=True)
-        self._finding_paths = sorted(FINDINGS_DIR.glob("*.md"),
+        out_dir = findings_dir()
+        out_dir.mkdir(parents=True, exist_ok=True)
+        self._finding_paths = sorted(out_dir.glob("*.md"),
                                      key=lambda p: p.stat().st_mtime,
                                      reverse=True)
         self._finding_paths = [p for p in self._finding_paths
@@ -487,6 +489,32 @@ class App(tk.Tk):
         self.val_out.pack(fill="both", expand=True, padx=6, pady=(0, 6))
 
     def on_validate(self):
+        if is_frozen():
+            # The portable build bundles the ENGINE, not the validation
+            # suite (tests/ and pytest are deliberately excluded). Without
+            # this guard the button ran pytest against a path that does not
+            # exist and painted "FAILURES" in red — the shipped binary
+            # accusing its own physics of failing validation. Caught by the
+            # pre-release security audit; cli.cmd_validate already had the
+            # equivalent guard, the GUI never got it.
+            self.val_out.delete("1.0", "end")
+            self.val_out.insert("1.0", (
+                "Validation suite not available in the portable build.\n\n"
+                "The suite is not bundled: shipping a test runner inside a\n"
+                "distributed binary widens its attack surface for no user\n"
+                "benefit, and its symbolic oracle (sympy) is precisely what\n"
+                "checks the shipped code — bundling it would defeat the\n"
+                "point.\n\n"
+                "Run it from a source checkout:\n"
+                "    pip install -e .[dev]\n"
+                "    python -m pytest tests -q\n\n"
+                f"This binary reports itself as rydsim {__version__}; the\n"
+                "suite result for that version is in the release notes and\n"
+                "in docs/AUDIT-2026-08-10.md."))
+            self.val_state.configure(text="not bundled (portable build)",
+                                     foreground=theme.AMBER)
+            self.set_status("validation suite is source-checkout only")
+            return
         self.set_status("running validation suite ...")
         self.val_state.configure(text="running ...", foreground=theme.AMBER)
 
