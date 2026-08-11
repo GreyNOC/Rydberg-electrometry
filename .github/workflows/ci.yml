@@ -1,0 +1,179 @@
+name: CI
+
+# The validation suite IS the science: 605 spec-anchored benchmark tests
+# checking the physics against analytic identities, exact oracles and
+# published values. A red build here means a physics claim is unsupported,
+# not merely that a lint failed.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: validation suite (${{ matrix.os }}, py${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python: ['3.11', '3.12']
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+
+      - name: Install (runtime + dev + designer extras)
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev,designer]"
+
+      - name: Run the validation suite
+        run: python -m pytest tests -q --tb=short -p no:warnings
+        # GUI smoke tests skip themselves when no display is available
+        # (tests/test_gui_smoke.py), so headless runners are fine.
+
+  declared-dependencies:
+    # Guards a defect class that actually shipped: pyproject declared
+    # numpy>=1.26 while six core call sites use np.trapezoid (NumPy 2.0+),
+    # so a resolver landing on the declared floor raised AttributeError
+    # inside the physics. A green suite on the DEVELOPER's newer numpy said
+    # nothing about the version we told users to install.
+    name: declared minimums are real
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Resolve the declared minimum of each runtime dependency
+        id: floors
+        run: |
+          python - <<'PY' >> "$GITHUB_ENV"
+          import re, tomllib, pathlib
+          deps = tomllib.loads(pathlib.Path("pyproject.toml").read_text())["project"]["dependencies"]
+          pins = []
+          for d in deps:
+              m = re.match(r"([A-Za-z0-9_.\-]+)\s*>=\s*([0-9][0-9A-Za-z.\-]*)", d)
+              if m:
+                  pins.append(f"{m.group(1)}=={m.group(2)}")
+          print("FLOOR_PINS=" + " ".join(pins))
+          PY
+
+      - name: Install at the declared floor, then exercise the physics
+        run: |
+          echo "installing: $FLOOR_PINS"
+          python -m pip install --upgrade pip
+          python -m pip install $FLOOR_PINS
+          python -m pip install -e . --no-deps
+          # Import every module and run a real calculation. If a declared
+          # floor is a lie, this is where it surfaces.
+          python - <<'PY'
+          import importlib, warnings
+          warnings.filterwarnings("ignore")
+          mods = ["constants","wigner","numerov","lindblad","eit","doppler",
+                  "spectroscopy","superhet","experiment","provenance","paths",
+                  "cell","atom","angular","radial","dipoles","lifetimes",
+                  "stark","zeeman","objective","cli"]
+          for m in mods:
+              importlib.import_module(f"rydsim.{m}")
+          import numpy as np
+          from rydsim.experiment import LadderConfig, at_experiment
+          res = at_experiment(LadderConfig(omega_rf=2*np.pi*18e6,
+                                           rf_dipole=1000*8.478353619789e-30),
+                              n_points=201)
+          assert res.measurement is not None, "AT extraction failed at the declared floor"
+          print("declared floors are usable; AT splitting =",
+                round(res.measurement.splitting/(2*np.pi)/1e6, 4), "MHz")
+          PY
+
+      - name: No third-party import is undeclared
+        run: |
+          python - <<'PY'
+          import ast, pathlib, sys, tomllib
+          # Everything importable that is neither stdlib nor first-party must
+          # appear in pyproject. scikit-learn and sympy were both used but
+          # undeclared before this check existed.
+          proj = tomllib.loads(pathlib.Path("pyproject.toml").read_text())["project"]
+          declared = set()
+          for spec in proj["dependencies"] + [d for v in proj.get("optional-dependencies", {}).values() for d in v]:
+              declared.add(spec.split(">")[0].split("=")[0].split("[")[0].strip().lower().replace("-", "_"))
+          alias = {"scikit_learn": "sklearn", "pillow": "pil"}
+          declared |= {alias[d] for d in list(declared) if d in alias}
+          found = {}
+          for path in pathlib.Path("src/rydsim").rglob("*.py"):
+              tree = ast.parse(path.read_text(encoding="utf-8"))
+              for node in ast.walk(tree):
+                  names = []
+                  if isinstance(node, ast.Import):
+                      names = [a.name.split(".")[0] for a in node.names]
+                  elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+                      names = [node.module.split(".")[0]]
+                  for n in names:
+                      if n not in sys.stdlib_module_names and n != "rydsim":
+                          found.setdefault(n.lower(), set()).add(str(path))
+          undeclared = {k: v for k, v in found.items() if k not in declared}
+          if undeclared:
+              for k, v in sorted(undeclared.items()):
+                  print(f"UNDECLARED: {k} imported by {sorted(v)[:3]}")
+              raise SystemExit(1)
+          print("all third-party imports are declared:", sorted(found))
+          PY
+
+  portable-build:
+    # THE point of this job. The pre-release audit established that the
+    # PyInstaller build emits zero errors and zero warnings while producing a
+    # binary that dies on startup, so a build-only gate ships a dead artifact.
+    # We build AND drive the result.
+    name: portable build + artifact verification
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install the LOCKED build environment
+        # Locked, not "whatever the runner has": building from an unpinned
+        # environment let PyInstaller's optional-backend hooks reach toward
+        # torch/CUDA and would produce an untruthful SBOM.
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r packaging/requirements-build.lock
+          python -m pip install -e . --no-deps
+
+      - name: Build both binaries
+        run: python -m PyInstaller packaging/rydsim.spec --noconfirm --distpath dist --workpath build/pyinstaller
+
+      - name: Both artifacts exist
+        shell: bash
+        run: |
+          test -f dist/rydsim-cli.exe || { echo "missing dist/rydsim-cli.exe"; exit 1; }
+          test -f dist/RydSim.exe    || { echo "missing dist/RydSim.exe"; exit 1; }
+          ls -la dist/*.exe
+
+      - name: Verify the ARTIFACTS (startup, physics, paths, refusals, hygiene)
+        run: python packaging/smoke_test.py dist/rydsim-cli.exe dist/RydSim.exe
+
+      - name: Upload built binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: rydsim-portable-${{ github.sha }}
+          path: |
+            dist/rydsim-cli.exe
+            dist/RydSim.exe
+          retention-days: 14
