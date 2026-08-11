@@ -144,6 +144,58 @@ class LadderConfig:
         return np.array(ks)
 
 
+#: Ground-state hyperfine fraction p_F = (2F+1)/sum_F(2F+1) for the F level
+#: the probe addresses (spec 05 §2.b): Rb-87 F=2 -> 5/8, Rb-85 F=3 -> 7/12,
+#: Cs-133 F=4 -> 9/16. Only this fraction of the vapor absorbs the probe, so
+#: it multiplies the number density in the susceptibility.
+GROUND_HFS_FRACTION = {"Rb87": 5 / 8, "Rb85": 7 / 12, "Cs133": 9 / 16}
+
+
+def probe_dipole(cfg: "LadderConfig") -> float:
+    """Effective probe transition dipole [C m] for a hot vapor.
+
+    Returns the NORMATIVE far-detuned element d_eff,far =
+    <J||er||J'>_Steck / sqrt(3) (spec 00 gap-closure #7, spec 03 Eq. 2.16),
+    which must be used for BOTH Omega_p and the chi prefactor. Species is
+    identified by the configured probe wavelength against the spec-01 D-line
+    data, so a Cs config gets the Cs element rather than a Rb one.
+
+    Falls back to the closed-cycling identity only when no species matches —
+    that fallback is the 2.40x-too-absorbing path of audit MED-22 and is a
+    last resort, never the intended route.
+    """
+    from .angular import effective_probe_dipole_far
+    from .atom import SPECIES
+    from .constants import AU_DIPOLE, wavelength_to_angular_freq
+    from .eit import dipole_from_linewidth
+
+    for sp in SPECIES.values():
+        for line in (getattr(sp, "d2", None), getattr(sp, "d1", None)):
+            if line is None:
+                continue
+            if abs(line.lambda_vac_m - cfg.lambda_probe) < 1e-11:
+                d_steck = getattr(line, "d_reduced_ea0", None)
+                if d_steck:
+                    return float(
+                        effective_probe_dipole_far(d_steck) * AU_DIPOLE)
+    return dipole_from_linewidth(
+        cfg.gamma_e, wavelength_to_angular_freq(cfg.lambda_probe))
+
+
+def absorbing_density(cfg: "LadderConfig") -> float:
+    """Number density of atoms that actually absorb the probe [m^-3].
+
+    The configured density times the ground hyperfine fraction p_F. Omitting
+    p_F was the second half of the 2.40x optical-depth overstatement.
+    """
+    n = cfg.resolved_density()
+    for name, sp in __import__("rydsim.atom", fromlist=["SPECIES"]).SPECIES.items():
+        line = getattr(sp, "d2", None)
+        if line is not None and abs(line.lambda_vac_m - cfg.lambda_probe) < 1e-11:
+            return n * GROUND_HFS_FRACTION.get(name, 1.0)
+    return n
+
+
 def _build_arrays(cfg: LadderConfig, with_rf: bool):
     omegas = [cfg.omega_probe, cfg.omega_coupling]
     deltas = [cfg.delta_probe, cfg.delta_coupling]
@@ -289,15 +341,34 @@ def superhet_transfer(cfg: LadderConfig, e_to_omega: float,
 
     Absolute chain (spec 06 §2.4, prefactors locked by the B-2 sum rule):
     normalized response S -> chi = i N p_ge^2/(eps0 hbar) S -> Beer-Lambert
-    T = exp(-k_p L Im chi) -> P = P_in * T. The probe dipole p_ge is tied
-    to gamma_e via the closed-transition identity (dipole_from_linewidth).
+    T = exp(-k_p L Im chi) -> P = P_in * T.
     e_to_omega: conversion E [V/m] -> Omega_RF [rad/s], i.e. d_RF/hbar.
+
+    PROBE DIPOLE (audit MED-22, re-derived and quantified by spec 10 R10-10).
+    This used the CLOSED-CYCLING dipole from dipole_from_linewidth, which is
+    the wrong element for a hot vapor: the normative probe dipole is
+    d_eff,far = <J||er||J'>_Steck / sqrt(3) (spec 00 lock, spec 03 §2.16),
+    and the absorbing population is the ground hyperfine fraction p_F, not
+    all of it. Since chi (and hence optical depth) scales as p_ge^2, the old
+    chain overstated OD by (2.989/2.441)^2 / p_F = 2.40x for Rb-87.
+
+    That is not cosmetic: it is the quantity the max_optical_depth gate
+    compares against, so a ceiling nominally at 5.0 was binding at a TRUE
+    optical depth near 2 — refusing configurations the physics handles, and
+    doing so right at the shot-noise optimum.
+
+    Note also spec 10 R10-1/R10-3: with a field-independent chi, Beer-Lambert
+    is the EXACT solution at any optical depth, not a thin-medium
+    approximation. What actually fails at depth is the weak-probe and
+    undepleted-coupling assumptions, which OD does not measure. The gate is
+    retained as a coarse guard pending the strong-probe solver of spec 10,
+    but it is explicitly NOT the validity criterion it was first documented
+    as being.
     """
     from .constants import wavelength_to_angular_freq
-    from .eit import chi_si, dipole_from_linewidth, transmission
+    from .eit import chi_si, transmission
 
-    d_ge = dipole_from_linewidth(
-        cfg.gamma_e, wavelength_to_angular_freq(cfg.lambda_probe))
+    d_ge = probe_dipole(cfg)
     k_p = 2 * np.pi / cfg.lambda_probe
     out = np.empty(len(e_grid))
     od_max = 0.0
@@ -305,7 +376,7 @@ def superhet_transfer(cfg: LadderConfig, e_to_omega: float,
         c = dataclasses.replace(cfg, omega_rf=float(e) * e_to_omega)
         s_norm = spectrum(c, np.array([c.delta_probe]),
                           n_doppler_nodes=n_doppler_nodes)[0]
-        chi = chi_si(np.array([s_norm]), cfg.resolved_density(), d_ge)
+        chi = chi_si(np.array([s_norm]), absorbing_density(cfg), d_ge)
         od_max = max(od_max, float(k_p * cfg.cell_length * np.imag(chi[0])))
         t = transmission(chi, cfg.cell_length, cfg.lambda_probe)[0]
         out[i] = probe_power_in * float(t)

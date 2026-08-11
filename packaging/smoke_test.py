@@ -216,12 +216,39 @@ def check_hygiene(exes: list[pathlib.Path]) -> None:
           len(set(lowered)) == len(lowered),
           f"names={[e.name for e in exes]}")
 
+    # What we actually care about is a DEVELOPER PATH leaking into a public
+    # artifact, not the occurrence of a word. The first version compared
+    # against getpass.getuser(), which is meaningless on CI: GitHub runners
+    # report "runneradmin", and upstream numpy/scipy wheels literally embed
+    # C:\Users\runneradmin\... in their DELVEWHEEL metadata because those
+    # wheels were themselves built on GitHub runners. The check could
+    # therefore never pass on CI no matter how clean our artifact was — it
+    # was measuring upstream's build machine, not ours.
+    #
+    # So: search for the HOME DIRECTORY PATH (distinctive, and the thing that
+    # actually leaks), and skip entirely when the account name is a generic
+    # CI/system one that cannot discriminate. Skipping is announced, never
+    # silent — a check that quietly does nothing is worse than no check.
     import getpass
+    import pathlib
 
+    GENERIC_ACCOUNTS = {"runner", "runneradmin", "root", "ubuntu", "admin",
+                        "administrator", "user", "build", "vsts", "vagrant"}
+    needles: list[tuple[bytes, str]] = []
     try:
-        user = getpass.getuser().encode()
+        account = getpass.getuser()
     except Exception:
-        user = b""
+        account = ""
+    home = str(pathlib.Path.home())
+    if account.lower() in GENERIC_ACCOUNTS:
+        print(f"  [note] build account {account!r} is a generic CI/system name "
+              "(and appears inside upstream wheels' own build metadata); "
+              "developer-path check skipped as non-discriminating")
+    elif len(home) >= 8:
+        needles.append((home.encode(), f"developer home path {home!r}"))
+        # also the POSIX-slash spelling, which tooling often rewrites to
+        needles.append((home.replace("\\", "/").encode(),
+                        f"developer home path (posix form) {home!r}"))
 
     for exe in exes:
         entries, how = _bundle_payloads(exe)
@@ -237,10 +264,10 @@ def check_hygiene(exes: list[pathlib.Path]) -> None:
             hits = [name for name, blob in entries if needle in blob]
             check(f"{exe.name}: no {what}", not hits,
                   f"found in {hits[:3]}" if hits else "")
-        if user and len(user) >= 4:
-            hits = [name for name, blob in entries if user in blob]
-            check(f"{exe.name}: no build-machine username baked in",
-                  not hits, f"found in {hits[:3]}" if hits else "")
+        for needle, what in needles:
+            hits = [name for name, blob in entries if needle in blob]
+            check(f"{exe.name}: no {what}", not hits,
+                  f"found in {hits[:3]}" if hits else "")
 
 
 def _bundle_payloads(exe: pathlib.Path) -> tuple[list[tuple[str, bytes]], str]:
