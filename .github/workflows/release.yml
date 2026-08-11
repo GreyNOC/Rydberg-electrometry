@@ -149,10 +149,30 @@ jobs:
             echo
             echo "Edit these notes before publishing. See CHANGELOG.md."
           } > notes.md
-          gh release create "$TAG" --draft --title "RydSim $TAG" --notes-file notes.md \
-            dist/RydSim.exe dist/rydsim-cli.exe \
-            "dist/rydsim-${VER}-windows-x64-portable.zip" \
-            "dist/rydsim-${VER}-sbom.cdx.json" dist/SHA256SUMS.txt \
-            || gh release upload "$TAG" dist/RydSim.exe dist/rydsim-cli.exe \
-               "dist/rydsim-${VER}-windows-x64-portable.zip" \
-               "dist/rydsim-${VER}-sbom.cdx.json" dist/SHA256SUMS.txt --clobber
+          ASSETS=(dist/RydSim.exe dist/rydsim-cli.exe
+                  "dist/rydsim-${VER}-windows-x64-portable.zip"
+                  "dist/rydsim-${VER}-sbom.cdx.json" dist/SHA256SUMS.txt)
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            # A release already exists for this tag. NEVER clobber a
+            # PUBLISHED one: `gh release upload --clobber` deletes existing
+            # assets before uploading, and a failed upload loses the
+            # originals — so a rerun could mutate or partially destroy
+            # artifacts users have already downloaded and checksummed
+            # (raised in review of PR #4). Overwriting is only acceptable
+            # while the release is still a draft nobody can have consumed.
+            IS_DRAFT=$(gh release view "$TAG" --json isDraft --jq .isDraft)
+            if [ "$IS_DRAFT" != "true" ]; then
+              echo "::error::Release $TAG is already PUBLISHED. Refusing to"
+              echo "::error::replace its assets — users may have downloaded and"
+              echo "::error::verified them against the published checksums."
+              echo "::error::Cut a new tag (e.g. ${TAG}.1) instead."
+              exit 1
+            fi
+            echo "Existing DRAFT for $TAG — refreshing its assets."
+            gh release upload "$TAG" "${ASSETS[@]}" --clobber
+            gh release edit "$TAG" --notes-file notes.md
+          else
+            gh release create "$TAG" --draft --title "RydSim $TAG" \
+              --notes-file notes.md "${ASSETS[@]}"
+          fi

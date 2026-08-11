@@ -42,8 +42,16 @@ import tempfile
 EXPECTED_RABI_MHZ = "18.2997"
 EXPECTED_FIELD = "1.43017"
 
+# Needles must identify REDISTRIBUTED CONTENT, not mentions of it. The first
+# version searched for "Kaulakys" — the author's surname — which fires on our
+# own specs legitimately CITING the paper (docs/spec/00-integrity-audit.md
+# says "Kaulakys formula chain"). A hygiene gate that alarms on a citation
+# gets muted, so it must key on distinctive prose from the paper BODY, which
+# only appears if the text itself was bundled. Phrase taken from
+# kaulakys_text.txt (arXiv:physics/9610018), which .gitignore excludes.
 FORBIDDEN_STRINGS = [
-    (b"Kaulakys", "non-redistributable arXiv paper text"),
+    (b"chaotic dynamics of the nonlinear syste",
+     "non-redistributable arXiv paper text (kaulakys_text.txt body)"),
     (b"cudnn", "torch/CUDA runtime"),
     (b"libtorch", "torch runtime"),
 ]
@@ -129,33 +137,73 @@ def check_cli(exe: pathlib.Path) -> None:
 
 def check_gui(exe: pathlib.Path) -> None:
     print(f"\n== windowed binary: {exe.name} ==")
-    # A windowed build has no console, so the only thing assertable without a
-    # desktop session is that it starts and STAYS alive (mainloop running)
-    # rather than exiting immediately. On a headless runner a Tk window cannot
-    # map, so absence of a window is not evidence of failure here.
+    # Liveness is NOT readiness. A build that hangs during initialization, or
+    # that pops a modal startup-traceback dialog, keeps the process running
+    # for any timeout you pick and would pass a poll()-only check while being
+    # precisely the dead artifact this gate exists to catch (raised in review
+    # of PR #4). So we require a readiness marker the application writes from
+    # INSIDE its event loop, once the window is realized.
+    import os
     import time
 
-    try:
-        proc = subprocess.Popen([str(exe)], stdout=subprocess.PIPE,
-                                stderr=subprocess.PIPE)
-    except OSError as exc:
-        check("windowed binary starts and does not exit immediately",
-              False, f"could not execute artifact: {exc}")
-        return
-    try:
-        time.sleep(20)
-        alive = proc.poll() is None
-        detail = "still running (event loop up)" if alive else \
-                 f"exited early rc={proc.returncode}"
-        if not alive:
-            out, err = proc.communicate(timeout=10)
-            detail += f" err={err.decode(errors='replace').strip()[:200]!r}"
-        check("windowed binary starts and does not exit immediately",
-              alive, detail)
-    finally:
-        if proc.poll() is None:
-            proc.kill()
-            proc.wait(timeout=15)
+    with tempfile.TemporaryDirectory() as td:
+        marker = pathlib.Path(td) / "ready.txt"
+        env = dict(os.environ, RYDSIM_READY_FILE=str(marker))
+        try:
+            proc = subprocess.Popen([str(exe)], stdout=subprocess.PIPE,
+                                    stderr=subprocess.PIPE, env=env)
+        except OSError as exc:
+            check("windowed binary reaches a ready GUI",
+                  False, f"could not execute artifact: {exc}")
+            return
+        try:
+            deadline = time.time() + 90
+            while time.time() < deadline:
+                if marker.is_file():
+                    break
+                if proc.poll() is not None:
+                    break
+                time.sleep(0.5)
+
+            if not marker.is_file():
+                if proc.poll() is not None:
+                    _, err = proc.communicate(timeout=10)
+                    detail = (f"process exited rc={proc.returncode} "
+                              f"err={err.decode(errors='replace').strip()[:200]!r}")
+                else:
+                    detail = ("process still alive but never signalled ready "
+                              "within 90 s — hung during init, or blocked on a "
+                              "modal dialog (liveness is not readiness)")
+                check("windowed binary reaches a ready GUI", False, detail)
+                return
+
+            fields = dict(
+                line.split("=", 1)
+                for line in marker.read_text(encoding="utf-8").splitlines()
+                if "=" in line)
+            check("windowed binary reaches a ready GUI", True,
+                  f"mapped={fields.get('mapped')} "
+                  f"{fields.get('width')}x{fields.get('height')} "
+                  f"title={fields.get('title')!r}")
+
+            # On a headless runner Tk cannot map a window, so a non-mapped
+            # window is not itself a failure — but a REALIZED window must
+            # still report a sane size. Zero-size means the widget tree never
+            # came up even though the loop is running.
+            try:
+                w, h = int(fields.get("width", 0)), int(fields.get("height", 0))
+            except ValueError:
+                w = h = 0
+            if fields.get("mapped") == "True":
+                check("realized window has a sane size", w > 100 and h > 100,
+                      f"{w}x{h}")
+            else:
+                print("  [note] window not mapped (headless session); "
+                      "size assertion skipped")
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait(timeout=15)
 
 
 def check_hygiene(exes: list[pathlib.Path]) -> None:
@@ -174,13 +222,60 @@ def check_hygiene(exes: list[pathlib.Path]) -> None:
         user = getpass.getuser().encode()
     except Exception:
         user = b""
+
     for exe in exes:
-        blob = exe.read_bytes()
+        entries, how = _bundle_payloads(exe)
+        # Scanning the raw .exe is NOT sufficient for a onefile build: the
+        # payload is COMPRESSED inside the appended archive, so a forbidden
+        # document can be present while a byte search of the outer file
+        # reports clean — a false green for exactly the case this guards
+        # (raised in review of PR #4). We decompress the archive and scan the
+        # real contents, and say which method was used so a silent downgrade
+        # to the weaker scan is visible.
+        print(f"  [scan] {exe.name}: {how}")
         for needle, what in FORBIDDEN_STRINGS:
-            check(f"{exe.name}: no {what}", needle not in blob)
+            hits = [name for name, blob in entries if needle in blob]
+            check(f"{exe.name}: no {what}", not hits,
+                  f"found in {hits[:3]}" if hits else "")
         if user and len(user) >= 4:
+            hits = [name for name, blob in entries if user in blob]
             check(f"{exe.name}: no build-machine username baked in",
-                  user not in blob)
+                  not hits, f"found in {hits[:3]}" if hits else "")
+
+
+def _bundle_payloads(exe: pathlib.Path) -> tuple[list[tuple[str, bytes]], str]:
+    """[(entry name, decompressed bytes)] for a onefile build, plus method.
+
+    Falls back to the raw executable bytes only if the archive cannot be
+    read, and reports that downgrade explicitly — a weaker scan that claims
+    to be the strong one is worse than no scan.
+    """
+    try:
+        from PyInstaller.archive.readers import CArchiveReader
+
+        reader = CArchiveReader(str(exe))
+        out: list[tuple[str, bytes]] = []
+        for name in reader.toc:
+            try:
+                data = reader.extract(name)
+            except Exception:
+                continue
+            if isinstance(data, tuple):        # some versions return (flag, data)
+                data = data[-1]
+            if isinstance(data, str):
+                data = data.encode("utf-8", "replace")
+            if isinstance(data, (bytes, bytearray)):
+                out.append((name, bytes(data)))
+        if out:
+            # Include the outer bytes too, so anything the bootloader itself
+            # embeds is still covered.
+            out.append(("<outer executable>", exe.read_bytes()))
+            return out, f"decompressed {len(out) - 1} archive entries"
+    except Exception as exc:
+        return ([( "<outer executable>", exe.read_bytes())],
+                f"WEAK raw-byte scan only — archive unreadable ({exc})")
+    return ([("<outer executable>", exe.read_bytes())],
+            "WEAK raw-byte scan only — archive empty")
 
 
 def main(argv: list[str]) -> int:

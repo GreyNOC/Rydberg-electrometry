@@ -541,8 +541,44 @@ class App(tk.Tk):
                         error=not ok)
 
 
+def _signal_ready(app: "App") -> None:
+    """Write the readiness marker named by RYDSIM_READY_FILE, if set.
+
+    Emitted from INSIDE the event loop (via ``after``), once the window has
+    actually been realized — so it certifies "the GUI came up", not merely
+    "the process is still alive". Artifact verification needs that
+    distinction: a build that hangs during initialization, or that pops a
+    modal startup-traceback dialog, keeps the process running and would pass
+    a liveness-only check while being exactly the dead artifact the check
+    exists to catch (raised in review of PR #4).
+
+    The marker records the realized window geometry, so a zero-size or
+    unmapped window is distinguishable from a working one.
+    """
+    import os
+
+    target = os.environ.get("RYDSIM_READY_FILE")
+    if not target:
+        return
+    try:
+        app.update_idletasks()          # force geometry to be computed
+        mapped = bool(app.winfo_ismapped())
+        info = (f"ready\nversion={__version__}\n"
+                f"mapped={mapped}\n"
+                f"width={app.winfo_width()}\nheight={app.winfo_height()}\n"
+                f"title={app.title()}\n")
+        pathlib.Path(target).write_text(info, encoding="utf-8")
+    except Exception:
+        # Never let diagnostics take down the application.
+        pass
+
+
 def main() -> int:
     app = App()
+    # 300 ms gives Tk time to realize and map the window before we assert
+    # anything about it; the callback runs on the event loop, so it cannot
+    # fire unless the loop is actually servicing events.
+    app.after(300, lambda: _signal_ready(app))
     app.mainloop()
     return 0
 
