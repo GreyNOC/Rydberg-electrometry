@@ -50,6 +50,9 @@ python -m rydsim.cli superhet --rf-dipole-ea0 1000 --probe-power-w 100e-6 --find
 # T3 co-site: hidden weak signal beside a strong interferer
 python -m rydsim.cli cosite --rf-dipole-ea0 1000 --interferer-offset-khz 50 --signal-offset-khz 13 --finding
 
+# T3 selectivity: blocking vs interferer offset, out of band (Floquet, cold)
+python -m rydsim.cli selectivity --no-doppler --rf-dipole-ea0 1000 --finding
+
 # EIT spectrum to a data file
 python -m rydsim.cli spectrum --rf-rabi-mhz 25 --span-mhz 40 -o spectrum.dat
 
@@ -73,6 +76,7 @@ src/rydsim/
   spectroscopy.py AT-splitting extraction, EIT linewidth measurement
   superhet.py     transduction, noise budgets, NEF, SQL, T_eq/NF
   cosite.py       T3: desensitization, hidden-signal floor, interferer spurs
+  floquet.py      two-tone harmonic balance: interferers at any offset
   experiment.py   config -> run -> Finding facade (CLI/GUI backend)
   provenance.py   Finding reports, config hashing, IntegrityError
   cli.py          full CLI

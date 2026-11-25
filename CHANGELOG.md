@@ -21,6 +21,19 @@ versions may change interfaces).
   interferers desensitize as 11.2 dB × (E_I/E_LO)^2.00; 1 dB blocking at
   0.31 × E_LO; a hidden signal stays detectable up to 121 dB below the
   interferer (1 s, SNR 1).
+- `rydsim.floquet` and `rydsim selectivity` — two-tone harmonic-balance
+  (Floquet) solver for interferers at ANY offset, single velocity class,
+  optically thin readout. Lifts the quasi-static limit of `cosite`. Validated
+  against direct OBE time integration (~1e-8), the quasi-static phase average
+  as (Delta/IBW)^2 (2e-4 at 0.005 x IBW), and a second-order AC-Stark law at
+  large offsets (0.2% at 0.5-2 GHz).
+- `findings/t3-selectivity-b492ee3d758a0913` — 1 dB blocking vs interferer
+  offset, 50 kHz-50 MHz (Rb-87 ladder, cold, thin). Far-offset rejection is
+  only ~10 dB/decade: an off-resonant interferer on the same transition
+  light-shifts the Rydberg levels by Omega_I^2/(4 Delta), so blocking grows as
+  sqrt(Delta) — half the slope of a single-pole filter. The light shift also
+  opens a slow response mode, so a 13 kHz hidden signal is blocked 8-9%
+  earlier than a near-DC one.
 - `experiment.converged_superhet_operating_point()` — log-spaced LO scan
   refined until the NEF converges, with boundary and non-convergence refusals.
 

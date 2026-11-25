@@ -82,9 +82,12 @@ Deliverable: an EW-grade datasheet for an idealized atomic receiver.
 
 *Progress (2026-11):* co-channel blocking is now modeled (`rydsim cosite`,
 `findings/t3-cosite-*`): weak-interferer desensitization law, 1/3 dB blocking
-levels, hidden-signal detection floor, and interferer spur table. Still open:
-out-of-band interferers beyond the atomic response bandwidth (needs a Floquet
-or time-domain OBE solver), LO leakage, and SFDR proper.
+levels, hidden-signal detection floor, and interferer spur table. Out-of-band
+interferers are now covered for the single-velocity-class, optically thin case
+(`rydsim selectivity`, `findings/t3-selectivity-*`): rejection beyond the
+response bandwidth is only ~10 dB/decade, set by the AC-Stark shift. Still
+open: Doppler-averaged selectivity, multi-level (other Rydberg transitions)
+light shifts at GHz offsets, LO leakage, and SFDR proper.
 
 ### T4 — Quantify the metrology/receiver tension
 The most sensitive modes are the least self-calibrated (Study Report §7.7).

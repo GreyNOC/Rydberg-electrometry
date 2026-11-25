@@ -22,6 +22,7 @@ findings/*.md
 !findings/literature-*
 !findings/reanalysis-*
 !findings/t3-cosite*
+!findings/t3-selectivity*
 data/cache/
 
 # Third-party paper text kept locally for spec work — not ours to redistribute.

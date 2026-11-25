@@ -379,9 +379,21 @@ generator power: the ratio is what the prediction is stated in.
    probe; the 2nd harmonic should sit ~20 dB below the 1st at the 1 dB
    blocking level. A test tone placed on one is masked.
 
-**Out of scope.** An interferer outside the atomic response bandwidth (MHz
-offsets) is not modeled. RydSim refuses that case; any measurement there is
-new territory, not a test of this finding.
+**Out-of-band follow-on** (`findings/t3-selectivity-b492ee3d758a0913`, cold
+single-class model). Repeat the blocking measurement while stepping the
+interferer offset from 50 kHz to 50 MHz.
+
+4. **Far-offset rejection is ~10 dB/decade.** Beyond a few MHz the blocking
+   field should grow as Delta^0.5. Mechanism: the interferer light-shifts the
+   two Rydberg levels by +/- Omega_I^2/(4 Delta), detuning both the RF and the
+   coupling two-photon resonance. **Falsified if** the slope is near
+   20 dB/decade (the atoms filtering like a single-pole low-pass) or if
+   blocking at large offset does not track a static detuning of the same
+   size. Watch for other Rydberg transitions within the offset range: they
+   add their own light shifts and are outside the 4-level model.
+5. **The hidden signal's own offset matters.** At 50 MHz interferer offset, a
+   13 kHz hidden tone is blocked ~8% earlier than a near-DC one, because the
+   light shift opens a slow (Rydberg-decay-scale) response mode.
 
 ---
 
