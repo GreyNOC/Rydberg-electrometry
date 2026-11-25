@@ -66,9 +66,15 @@ if TYPE_CHECKING:
 Transfer = Callable[[np.ndarray], np.ndarray]
 
 #: Largest offset, as a fraction of the 3 dB instantaneous bandwidth, at which
-#: the quasi-static transfer curve is accepted. For a single-pole response
-#: |H(0.1 f_3dB)|/|H(0)| = 0.995: a 0.04 dB gain error.
-QUASI_STATIC_MAX_FRACTION = 0.1
+#: the quasi-static transfer curve is accepted.
+#:
+#: Measured, not assumed: against the exact two-tone Floquet solver
+#: (rydsim.floquet) the quasi-static 1 dB BLOCKING level errs by
+#: ~7 (Delta/IBW)^2 — 7% at 0.1 x IBW, 1.8% at 0.05, 0.3% at 0.02. An
+#: earlier value of 0.1 was justified by single-pole GAIN roll-off
+#: (|H(0.1 f_3dB)| = 0.995), which understates the error in the quantity
+#: this module reports. tests/test_floquet.py locks the measurement.
+QUASI_STATIC_MAX_FRACTION = 0.02
 
 
 def require_quasi_static(offsets_hz: Sequence[float], ibw_hz: float,

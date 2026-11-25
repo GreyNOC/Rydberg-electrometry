@@ -14,7 +14,7 @@ versions may change interfaces).
   the interferer-shifted probe power, interferer spur levels at n·Δ_I, and a
   fitted weak-interferer law. Cross-checked against brute-force two-tone DFT
   demodulation (agreement ~1e-11) and exact quadratic-transfer identities.
-  Refuses offsets beyond 0.1 × the atomic response bandwidth (needs a
+  Refuses offsets beyond 0.02 × the atomic response bandwidth (needs a
   Floquet/time-domain solver, not implemented), signal offsets on an
   interferer harmonic, and any envelope outside the sampled transfer curve.
 - `findings/t3-cosite-75df1de4cd4322db` — Rb-87 / 1000 ea0 default: weak
@@ -25,6 +25,12 @@ versions may change interfaces).
   refined until the NEF converges, with boundary and non-convergence refusals.
 
 ### Fixed
+- **`cosite` quasi-static gate was too loose for blocking claims.** It
+  admitted offsets up to 0.1 × IBW on a single-pole GAIN argument (0.04 dB).
+  Measured against the exact two-tone Floquet solver, the 1 dB blocking level
+  errs by ~7 (Delta/IBW)^2: 7% at 0.1 × IBW. Gate tightened to 0.02 × IBW
+  (<= 0.3%). The committed `t3-cosite-75df1de4cd4322db` finding sits at
+  0.005 × IBW and is unaffected.
 - **CLI `superhet` and the GUI superhet tab overstated NEF ~8×.** A linear
   60-point LO grid on [0.05, 20] V/m skipped the low-field optimum: 8.9 vs a
   converged 1.116 nV/cm/√Hz for the Rb-87 / 1000 ea0 default (spline-free

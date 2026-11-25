@@ -395,8 +395,9 @@ def cmd_cosite(args) -> int:
                 "theta quadrature": "converged to 1e-9 relative by node "
                                     "doubling at every scan point",
                 "quasi-static model": (
-                    f"offsets held below {cs.QUASI_STATIC_MAX_FRACTION:g} x IBW; "
-                    "single-pole roll-off there is <= 0.04 dB"),
+                    f"offsets held below {cs.QUASI_STATIC_MAX_FRACTION:g} x IBW, "
+                    "where the blocking-level error vs the exact Floquet "
+                    "solver is <= ~0.3% (scales as 7 (Delta/IBW)^2)"),
             },
             cross_checks=[{"quantity": xc.quantity, "methods": xc.methods,
                            "spread_rel": xc.spread_rel,
