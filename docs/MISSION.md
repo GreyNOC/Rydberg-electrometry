@@ -80,6 +80,12 @@ dynamic range, equivalent noise temperature vs a conventional front end,
 LO-leakage observability, and behavior under strong co-site interferers.
 Deliverable: an EW-grade datasheet for an idealized atomic receiver.
 
+*Progress (2026-11):* co-channel blocking is now modeled (`rydsim cosite`,
+`findings/t3-cosite-*`): weak-interferer desensitization law, 1/3 dB blocking
+levels, hidden-signal detection floor, and interferer spur table. Still open:
+out-of-band interferers beyond the atomic response bandwidth (needs a Floquet
+or time-domain OBE solver), LO leakage, and SFDR proper.
+
 ### T4 — Quantify the metrology/receiver tension
 The most sensitive modes are the least self-calibrated (Study Report §7.7).
 Sweep the same cell between AT-traceable and superhet operating points and
