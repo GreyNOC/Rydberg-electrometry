@@ -27,6 +27,10 @@ budgets.
   transfer curve, shot/RIN/detector noise budgets, NEF, first-principles
   instantaneous bandwidth from the OBE resolvent transfer function H(δ),
   SQL (both published conventions), noise temperature / noise figure.
+- **Co-site interference (T3)** — a weak hidden signal beside a strong
+  co-channel interferer: phase-averaged desensitization, blocking levels,
+  hidden-signal detection floor, and interferer spur table, cross-checked
+  against brute-force two-tone demodulation.
 - **Findings pipeline** — every measurement can be written as a
   config-hashed JSON+Markdown report carrying its full uncertainty budget,
   constants provenance, caveats, and validation state.
@@ -42,6 +46,9 @@ python -m rydsim.cli at --rf-rabi-mhz 18 --rf-dipole-ea0 1000 --finding
 
 # superhet receiver: LO optimization + noise budget
 python -m rydsim.cli superhet --rf-dipole-ea0 1000 --probe-power-w 100e-6 --finding
+
+# T3 co-site: hidden weak signal beside a strong interferer
+python -m rydsim.cli cosite --rf-dipole-ea0 1000 --interferer-offset-khz 50 --signal-offset-khz 13 --finding
 
 # EIT spectrum to a data file
 python -m rydsim.cli spectrum --rf-rabi-mhz 25 --span-mhz 40 -o spectrum.dat
@@ -65,6 +72,7 @@ src/rydsim/
   doppler.py      thermal-vapor helpers + Lindblad cross-validation path
   spectroscopy.py AT-splitting extraction, EIT linewidth measurement
   superhet.py     transduction, noise budgets, NEF, SQL, T_eq/NF
+  cosite.py       T3: desensitization, hidden-signal floor, interferer spurs
   experiment.py   config -> run -> Finding facade (CLI/GUI backend)
   provenance.py   Finding reports, config hashing, IntegrityError
   cli.py          full CLI

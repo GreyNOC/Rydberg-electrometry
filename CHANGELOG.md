@@ -4,6 +4,34 @@ All notable changes to RydSim. Format follows [Keep a Changelog](https://keepach
 this project uses [Semantic Versioning](https://semver.org/) (pre-1.0: minor
 versions may change interfaces).
 
+## [Unreleased]
+
+### Added
+- `rydsim.cosite` and `rydsim cosite` — campaign T3, first deliverable: a
+  weak hidden signal beside a strong co-channel interferer. Phase-averaged
+  small-signal gain under the interferer (desensitization / blocking), the
+  hidden-signal NEF and detection floor with the noise budget re-evaluated at
+  the interferer-shifted probe power, interferer spur levels at n·Δ_I, and a
+  fitted weak-interferer law. Cross-checked against brute-force two-tone DFT
+  demodulation (agreement ~1e-11) and exact quadratic-transfer identities.
+  Refuses offsets beyond 0.1 × the atomic response bandwidth (needs a
+  Floquet/time-domain solver, not implemented), signal offsets on an
+  interferer harmonic, and any envelope outside the sampled transfer curve.
+- `findings/t3-cosite-75df1de4cd4322db` — Rb-87 / 1000 ea0 default: weak
+  interferers desensitize as 11.2 dB × (E_I/E_LO)^2.00; 1 dB blocking at
+  0.31 × E_LO; a hidden signal stays detectable up to 121 dB below the
+  interferer (1 s, SNR 1).
+- `experiment.converged_superhet_operating_point()` — log-spaced LO scan
+  refined until the NEF converges, with boundary and non-convergence refusals.
+
+### Fixed
+- **CLI `superhet` and the GUI superhet tab overstated NEF ~8×.** A linear
+  60-point LO grid on [0.05, 20] V/m skipped the low-field optimum: 8.9 vs a
+  converged 1.116 nV/cm/√Hz for the Rb-87 / 1000 ea0 default (spline-free
+  reference agrees to 0.02%). Both now use the converged log-grid scan, and
+  the finding reports measured grid convergence instead of nominal spacing.
+  `objective.evaluate()` and the committed d3 findings were not affected.
+
 ## [0.2.0] — 2026-08-11
 
 First release with a portable Windows binary. The engine is unchanged in

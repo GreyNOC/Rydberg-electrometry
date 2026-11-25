@@ -26,15 +26,16 @@ import numpy as np
 from . import __version__
 from .constants import AU_DIPOLE, HBAR
 from .experiment import (
+    STANDING_CAVEATS,
     ATResult,
     LadderConfig,
     at_experiment,
     at_finding,
+    converged_superhet_operating_point,
     spectrum,
-    superhet_transfer,
 )
-from .provenance import Finding
-from .superhet import min_detectable_field, optimize_lo
+from .provenance import Finding, IntegrityError
+from .superhet import min_detectable_field
 
 BANNER = f"GreyNOC RydSim v{__version__} — Rydberg electrometry simulator"
 # Resolved at call time, not import time: in a frozen build the location
@@ -191,18 +192,21 @@ def cmd_superhet(args) -> int:
             return 2
     d = cfg.rf_dipole
     e_to_omega = d / HBAR
-    e_grid = np.linspace(args.e_min, args.e_max, args.lo_points)
     print(BANNER)
-    print(f"[superhet] scanning {args.lo_points} LO points "
-          f"E in [{args.e_min}, {args.e_max}] V/m ...")
-    p_curve = superhet_transfer(cfg, e_to_omega, e_grid, args.probe_power_w,
-                                n_doppler_nodes=args.doppler_nodes)
-    from scipy.interpolate import CubicSpline
-    transfer = CubicSpline(e_grid, p_curve)
-    op = optimize_lo(lambda e: float(transfer(e)),
-                     e_grid[2:-2], cfg.lambda_probe,
-                     rin_db_per_hz=args.rin_db,
-                     detector_nep_w_per_rthz=args.nep)
+    print(f"[superhet] log-spaced LO scan E in [{args.e_min}, {args.e_max}] "
+          f"V/m from {args.lo_points} points, refined to convergence ...")
+    try:
+        conv = converged_superhet_operating_point(
+            cfg, e_to_omega, args.e_max, args.probe_power_w,
+            e_min=args.e_min, n_points=args.lo_points,
+            rin_db_per_hz=args.rin_db, detector_nep_w_per_rthz=args.nep)
+    except IntegrityError as exc:
+        print(f"refused: {exc}", file=sys.stderr)
+        return 3
+    op = conv.op
+    transfer = conv.spline()
+    print(f"LO grid converged at {conv.n_points} points "
+          f"(NEF change on last doubling {conv.nef_rel_change:.2%})")
     nef_cm = op.nef / 100.0  # V/m -> V/cm
     print(f"optimal LO field:   {op.e_lo:.4g} V/m "
           f"(Omega_LO = {op.e_lo*e_to_omega/(2*np.pi)/1e6:.3f} MHz)")
@@ -240,7 +244,10 @@ def cmd_superhet(args) -> int:
                     "rin_db": args.rin_db, "nep": args.nep,
                     "lo_grid": [args.e_min, args.e_max, args.lo_points]},
             uncertainty_budget={
-                "LO grid resolution": f"{(args.e_max-args.e_min)/args.lo_points:.3g} V/m",
+                "LO grid convergence": (
+                    f"NEF moved {conv.nef_rel_change:.2%}, E_LO moved "
+                    f"{conv.e_lo_rel_change:.2%} on the last grid doubling "
+                    f"({conv.n_points} log-spaced points)"),
                 "transfer-curve model": "optical-depth chain pending spec 05 "
                 "integration; slope-normalized NEF insensitive to overall scale",
             },
@@ -248,6 +255,170 @@ def cmd_superhet(args) -> int:
             caveats=["Technical-noise realism limited to stationary RIN/NEP model."],
         ).finalize(__version__)
         _write_finding(f, "superhet-nef")
+    return 0
+
+
+def cmd_cosite(args) -> int:
+    """T3: hidden weak signal beside a strong co-channel interferer."""
+    from . import cosite as cs
+    from .provenance import CrossCheck
+
+    cfg = _load_config(args)
+    _maybe_save_config(args, cfg)
+    if cfg.rf_dipole is None:
+        print("error: cosite needs --rf-dipole-ea0", file=sys.stderr)
+        return 2
+    if not 0 < args.ei_min_frac < args.ei_max_frac < 1:
+        print("error: need 0 < --ei-min-frac < --ei-max-frac < 1",
+              file=sys.stderr)
+        return 2
+    if args.ei_points < 2 or args.integration_s <= 0 or args.harmonics < 1:
+        print("error: need --ei-points >= 2, --integration-s > 0, "
+              "--harmonics >= 1", file=sys.stderr)
+        return 2
+    e_to_omega = cfg.rf_dipole / HBAR
+    f_i = args.interferer_offset_khz * 1e3
+    f_s = args.signal_offset_khz * 1e3
+    print(BANNER)
+    try:
+        conv = converged_superhet_operating_point(
+            cfg, e_to_omega, args.e_max, args.probe_power_w,
+            e_min=args.e_min, n_points=args.lo_points,
+            rin_db_per_hz=args.rin_db, detector_nep_w_per_rthz=args.nep)
+        e_lo = conv.op.e_lo
+        ibw = cs.instantaneous_bandwidth_hz(cfg, e_lo, e_to_omega)
+        cs.require_quasi_static([f_i, f_s], ibw)
+        cs.require_no_spur_collision(f_s, f_i, args.harmonics)
+        spl = conv.spline()
+        dspl = spl.derivative()
+        domain = (0.0, float(conv.e_grid[-1]))
+        e_i_grid = np.geomspace(args.ei_min_frac, args.ei_max_frac,
+                                args.ei_points) * e_lo
+        pts = cs.cosite_scan(spl, dspl, e_lo, e_i_grid, domain,
+                             cfg.lambda_probe, rin_db_per_hz=args.rin_db,
+                             detector_nep_w_per_rthz=args.nep,
+                             integration_time=args.integration_s)
+        mid = pts[len(pts) // 2]
+        xc = CrossCheck(
+            quantity=f"hidden-signal gain at E_I = {mid.e_i:.4g} V/m",
+            methods={
+                "phase-average": mid.gain,
+                "two-tone DFT": cs.two_tone_fft_gain(
+                    spl, e_lo, mid.e_i, 1e-5 * e_lo, domain),
+            },
+            unit="W/(V/m)", tolerance_rel=1e-4)
+        xc.require()
+        # Interpolation sensitivity: same physics, half the transfer samples.
+        from scipy.interpolate import CubicSpline
+        coarse = CubicSpline(conv.e_grid[::2], conv.p_curve[::2])
+        g_coarse = cs.small_signal_gain(coarse, coarse.derivative(), e_lo,
+                                        mid.e_i, domain).gain
+    except IntegrityError as exc:
+        print(f"refused: {exc}", file=sys.stderr)
+        return 3
+    interp_rel = abs(g_coarse - mid.gain) / mid.gain
+
+    g0 = pts[0].gain / 10 ** (-pts[0].desense_db / 20)
+    e_min0 = (np.sqrt(conv.op.budget.total) / abs(conv.op.slope)
+              / np.sqrt(args.integration_s))
+    b1 = cs.blocking_level(pts, 1.0)
+    b3 = cs.blocking_level(pts, 3.0)
+    law = cs.small_interferer_law(pts, e_lo)
+    law_txt = (f"desense ~= {law[1]:.4g} dB x (E_I/E_LO)^{law[0]:.3f}"
+               if law else "not enough weak-interferer points to fit")
+    e_spur = b1 if b1 is not None else pts[-1].e_i
+    spurs = cs.interferer_spurs(spl, e_lo, e_spur, domain, args.harmonics)
+    spur_db = [20 * np.log10(max(s / g0, 1e-300) / e_min0) for s in spurs]
+
+    print(f"LO: {e_lo:.4g} V/m   NEF(no interferer): "
+          f"{conv.op.nef / 100 * 1e9:.4g} nV/cm/rtHz   IBW: {ibw / 1e3:.4g} kHz")
+    print(f"offsets: interferer {f_i / 1e3:g} kHz, hidden signal "
+          f"{f_s / 1e3:g} kHz (quasi-static limit "
+          f"{cs.QUASI_STATIC_MAX_FRACTION * ibw / 1e3:.4g} kHz)")
+    print(f"\n{'E_I [V/m]':>11} {'desense dB':>11} {'NEF nV/cm/rtHz':>15} "
+          f"{'E_min [V/m]':>12} {'hidden below E_I dB':>20}")
+    for p in pts:
+        print(f"{p.e_i:11.4g} {p.desense_db:11.3f} {p.nef / 100 * 1e9:15.4g} "
+              f"{p.e_min:12.4g} {p.hidden_below_interferer_db:20.1f}")
+    fmt = (lambda b: f"{b:.4g} V/m ({b / e_lo:.3f} x E_LO)"
+           if b is not None else "not reached in scan")
+    print(f"\nweak-interferer law: {law_txt}")
+    print(f"1 dB blocking: {fmt(b1)}\n3 dB blocking: {fmt(b3)}")
+    print(f"interferer spurs at E_I = {e_spur:.4g} V/m "
+          "(field-equivalent, dB above the no-interferer floor):")
+    for n, s in enumerate(spur_db, 1):
+        print(f"  {n} x {f_i / 1e3:g} kHz: {s:+.1f} dB")
+    print(f"cross-check: phase-average vs two-tone DFT agree to "
+          f"{xc.spread_rel:.1e}; transfer-curve interpolation sensitivity "
+          f"{interp_rel:.1e}")
+
+    if args.finding:
+        best = max(pts, key=lambda p: p.hidden_below_interferer_db)
+        f = Finding(
+            title=f"T3 co-site: hidden signal beside a strong interferer [{cfg.name}]",
+            result={
+                "LO operating point": f"{e_lo:.6g} V/m",
+                "NEF, no interferer": f"{conv.op.nef / 100 * 1e9:.4g} nV/cm/rtHz",
+                "instantaneous bandwidth (resolvent, Doppler-free)": f"{ibw:.4g} Hz",
+                "interferer / signal offsets": f"{f_i:.6g} Hz / {f_s:.6g} Hz",
+                "weak-interferer desensitization law": law_txt,
+                "1 dB blocking level": fmt(b1),
+                "3 dB blocking level": fmt(b3),
+                "largest hidden-below-interferer margin in scan": (
+                    f"{best.hidden_below_interferer_db:.1f} dB at "
+                    f"E_I = {best.e_i:.4g} V/m ({args.integration_s:g} s, SNR 1)"),
+                "scan (E_I | desense | NEF | E_min | hidden below E_I)": [
+                    f"{p.e_i:.4g} V/m | {p.desense_db:.4f} dB | "
+                    f"{p.nef / 100 * 1e9:.4g} nV/cm/rtHz | {p.e_min:.4g} V/m | "
+                    f"{p.hidden_below_interferer_db:.1f} dB"
+                    for p in pts],
+                f"interferer spurs at E_I = {e_spur:.4g} V/m "
+                "(dB above no-interferer floor)": {
+                    f"{n} x {f_i:.6g} Hz": round(float(s), 2)
+                    for n, s in enumerate(spur_db, 1)},
+            },
+            config={**cfg.to_dict(), "probe_power_w": args.probe_power_w,
+                    "rin_db": args.rin_db, "nep": args.nep,
+                    "lo_scan": [args.e_min, args.e_max, args.lo_points],
+                    "interferer_offset_hz": f_i, "signal_offset_hz": f_s,
+                    "ei_frac": [args.ei_min_frac, args.ei_max_frac,
+                                args.ei_points],
+                    "integration_s": args.integration_s,
+                    "harmonics": args.harmonics},
+            uncertainty_budget={
+                "LO grid convergence": (
+                    f"NEF moved {conv.nef_rel_change:.2%} on the last "
+                    f"doubling ({conv.n_points} points)"),
+                "transfer-curve interpolation": (
+                    f"gain changes {interp_rel:.1e} (relative) when the "
+                    "transfer curve is resampled at half density"),
+                "theta quadrature": "converged to 1e-9 relative by node "
+                                    "doubling at every scan point",
+                "quasi-static model": (
+                    f"offsets held below {cs.QUASI_STATIC_MAX_FRACTION:g} x IBW; "
+                    "single-pole roll-off there is <= 0.04 dB"),
+            },
+            cross_checks=[{"quantity": xc.quantity, "methods": xc.methods,
+                           "spread_rel": xc.spread_rel,
+                           "tolerance_rel": xc.tolerance_rel}],
+            constants_used=list(cfg.sources),
+            validation_state="see rydsim validate (tests/test_cosite.py, "
+                             "tests/test_lo_convergence.py cover this command)",
+            caveats=list(STANDING_CAVEATS) + [
+                "Interferer and hidden signal are assumed to drive the same "
+                "Rydberg RF transition as the LO (co-channel). Out-of-band "
+                "interferers beyond the atomic response bandwidth are refused, "
+                "not modeled: they need a time-domain / Floquet OBE solver.",
+                "IBW from the single-velocity-class OBE resolvent; Doppler "
+                "averaging of the response bandwidth is not applied.",
+                "Noise budget is shot + RIN + detector at the interferer-"
+                "shifted mean probe power; laser frequency noise is omitted "
+                "here (included in objective.evaluate, not in this command).",
+                "Signal offsets on an interferer harmonic are refused; the "
+                "spur table gives the masking level there instead.",
+            ],
+        ).finalize(__version__)
+        _write_finding(f, "t3-cosite")
     return 0
 
 
@@ -332,12 +503,40 @@ def build_parser() -> argparse.ArgumentParser:
                     help="laser RIN [dB/Hz]")
     ph.add_argument("--nep", type=float, default=1e-12,
                     help="detector NEP [W/rtHz]")
-    ph.add_argument("--e-min", type=float, default=0.05)
-    ph.add_argument("--e-max", type=float, default=20.0)
-    ph.add_argument("--lo-points", type=int, default=60)
+    ph.add_argument("--e-min", type=float, default=0.002,
+                    help="lower end of the log-spaced LO scan [V/m]")
+    ph.add_argument("--e-max", type=float, default=20.0,
+                    help="upper end of the LO scan [V/m]")
+    ph.add_argument("--lo-points", type=int, default=96,
+                    help="initial log-spaced LO points; doubled until the "
+                         "NEF converges to 1%%")
     ph.add_argument("--doppler-nodes", type=int, default=24)
     ph.add_argument("--finding", action="store_true")
     ph.set_defaults(func=cmd_superhet)
+
+    pc = sub.add_parser(
+        "cosite", help="T3: hidden weak signal beside a strong interferer")
+    _add_common_physics_args(pc)
+    pc.add_argument("--probe-power-w", type=float, default=100e-6)
+    pc.add_argument("--rin-db", type=float, default=-150.0)
+    pc.add_argument("--nep", type=float, default=1e-12)
+    pc.add_argument("--e-min", type=float, default=0.002)
+    pc.add_argument("--e-max", type=float, default=20.0)
+    pc.add_argument("--lo-points", type=int, default=96)
+    pc.add_argument("--interferer-offset-khz", type=float, default=50.0,
+                    help="interferer offset from the LO [kHz]")
+    pc.add_argument("--signal-offset-khz", type=float, default=13.0,
+                    help="hidden-signal offset from the LO [kHz]")
+    pc.add_argument("--ei-min-frac", type=float, default=1e-3,
+                    help="smallest interferer amplitude, as a fraction of E_LO")
+    pc.add_argument("--ei-max-frac", type=float, default=0.9,
+                    help="largest interferer amplitude, as a fraction of E_LO")
+    pc.add_argument("--ei-points", type=int, default=25)
+    pc.add_argument("--integration-s", type=float, default=1.0)
+    pc.add_argument("--harmonics", type=int, default=5,
+                    help="interferer harmonics to report as spurs")
+    pc.add_argument("--finding", action="store_true")
+    pc.set_defaults(func=cmd_cosite)
 
     pv = sub.add_parser("validate", help="run the scientific validation suite")
     pv.add_argument("-v", "--verbose", action="store_true")

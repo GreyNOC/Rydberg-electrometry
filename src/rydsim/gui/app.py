@@ -25,9 +25,15 @@ from matplotlib.figure import Figure
 
 from .. import __version__
 from ..constants import AU_DIPOLE, HBAR
-from ..experiment import LadderConfig, at_experiment, at_finding, spectrum, superhet_transfer
+from ..experiment import (
+    LadderConfig,
+    at_experiment,
+    at_finding,
+    converged_superhet_operating_point,
+    spectrum,
+)
 from ..provenance import IntegrityError
-from ..superhet import min_detectable_field, optimize_lo
+from ..superhet import min_detectable_field
 from . import theme
 
 ROOT_DIR = pathlib.Path(__file__).resolve().parents[3]
@@ -370,14 +376,15 @@ class App(tk.Tk):
             )
             d = cfg.rf_dipole
             p_in = f.get("power") * 1e-6
-            e_grid = np.linspace(0.05, f.get("emax"), int(f.get("lopts")))
-            p_curve = superhet_transfer(cfg, d / HBAR, e_grid, p_in)
-            from scipy.interpolate import CubicSpline
-            transfer = CubicSpline(e_grid, p_curve)
-            op = optimize_lo(lambda e: float(transfer(e)), e_grid[2:-2],
-                             cfg.lambda_probe,
-                             rin_db_per_hz=f.get("rin"),
-                             detector_nep_w_per_rthz=f.get("nep") * 1e-12)
+            # Log-spaced, refinement-checked LO scan: a linear grid in V/m
+            # skipped the low-field optimum (see converged_superhet_operating_point).
+            conv = converged_superhet_operating_point(
+                cfg, d / HBAR, f.get("emax"), p_in,
+                n_points=max(int(f.get("lopts")), 8),
+                rin_db_per_hz=f.get("rin"),
+                detector_nep_w_per_rthz=f.get("nep") * 1e-12)
+            op, e_grid, p_curve = conv.op, conv.e_grid, conv.p_curve
+            transfer = conv.spline()
             # NEF vs LO curve for the plot
             nefs = []
             for e in e_grid[2:-2]:

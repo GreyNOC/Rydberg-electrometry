@@ -350,6 +350,39 @@ survives. An experiment that finds α ≈ 0.18 while measuring 10 nV/cm/√Hz
 absolute *confirms* our finding. One that finds α ≈ 1 refutes it, regardless of
 the absolute level.
 
+### Tier 3 add-on — co-site blocking (campaign T3)
+
+**Tests:** `findings/t3-cosite-75df1de4cd4322db` — how a strong co-channel
+interferer reduces the superhet gain for a weak signal nearby.
+
+**Procedure.** Same apparatus, LO locked at its NEF optimum. Add a second RF
+tone (the interferer) at +50 kHz from the LO and a weak test tone at +13 kHz,
+both on the same Rydberg transition, both well inside the atomic response
+bandwidth. Hold the test tone fixed and weak; step the interferer amplitude
+from ~10⁻³ E_LO to ~0.9 E_LO. At each step record the demodulated amplitude
+of the 13 kHz beat. Calibrate E_I against E_LO by AT splitting, not by
+generator power: the ratio is what the prediction is stated in.
+
+**Predictions**
+
+1. **Weak interferers desensitize quadratically.** Gain loss in dB scales as
+   (E_I/E_LO)^p with **p = 2.00**. This follows from any smooth transfer
+   curve (the first-order term averages out over the interferer phase), so it
+   tests the quasi-static two-tone picture rather than RydSim's numbers.
+   **Falsified if p differs from 2 by more than the fit uncertainty**: p ≈ 1
+   would mean the atoms are not responding to the envelope magnitude.
+2. **1 dB blocking near 0.31 × E_LO** for the default configuration. This one
+   *is* model-dependent (it depends on the transfer-curve shape), so expect it
+   to move with real optical depth, dephasing and laser noise. Treat a factor-
+   of-two disagreement as model error to investigate, not as refutation.
+3. **Spurs at n × 50 kHz.** The interferer writes its own tones into the
+   probe; the 2nd harmonic should sit ~20 dB below the 1st at the 1 dB
+   blocking level. A test tone placed on one is masked.
+
+**Out of scope.** An interferer outside the atomic response bandwidth (MHz
+offsets) is not modeled. RydSim refuses that case; any measurement there is
+new territory, not a test of this finding.
+
 ---
 
 ## What each tier actually buys you

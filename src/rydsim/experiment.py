@@ -395,3 +395,76 @@ def superhet_transfer(cfg: LadderConfig, e_to_omega: float,
             "NEF would be meaningless. Lower the temperature, shorten the "
             "cell, or implement the z-propagation solver (spec 06 §7.2).")
     return out
+
+
+@dataclass
+class ConvergedOperatingPoint:
+    """Superhet operating point proven stable under LO-grid refinement."""
+
+    op: OperatingPoint
+    e_grid: np.ndarray          # sampled RF field amplitudes [V/m], starts at 0
+    p_curve: np.ndarray         # transmitted probe power on e_grid [W]
+    n_points: int               # log-spaced samples in the accepted grid
+    nef_rel_change: float       # |NEF(n) - NEF(n/2)| / NEF(n) at acceptance
+    e_lo_rel_change: float      # same, for the LO amplitude
+
+    def spline(self):
+        from scipy.interpolate import CubicSpline
+        return CubicSpline(self.e_grid, self.p_curve)
+
+
+def converged_superhet_operating_point(
+        cfg: LadderConfig, e_to_omega: float, e_max: float,
+        probe_power_in: float, *, e_min: float | None = None,
+        n_points: int = 96, rin_db_per_hz: float = -150.0,
+        detector_nep_w_per_rthz: float = 1e-12, rtol: float = 1e-2,
+        max_doublings: int = 4) -> ConvergedOperatingPoint:
+    """LO optimization on a log grid, refined until the NEF stops moving.
+
+    A linear grid in absolute V/m under-samples the low-field region where
+    the superhet optimum usually sits: the former CLI default (60 points on
+    [0.05, 20] V/m, 0.34 V/m spacing) placed the Rb-87 / 1000 ea0 optimum at
+    1.06 V/m and reported 8.9 nV/cm/rtHz against a converged 1.12 at
+    0.31 V/m — an 8x overstatement with no warning. Log spacing puts samples
+    where the transfer curve bends; doubling until the NEF changes by less
+    than `rtol` turns "looks converged" into a checked claim.
+
+    Raises IntegrityError when the optimum sits on the grid boundary (the
+    true optimum may lie outside the scanned range) or when refinement
+    exhausts `max_doublings` without meeting `rtol`.
+    """
+    if e_max <= 0 or n_points < 8:
+        raise ValueError("need e_max > 0 and n_points >= 8")
+    lo_floor = e_min if e_min is not None else e_max * 1e-4
+    if not 0 < lo_floor < e_max:
+        raise ValueError("need 0 < e_min < e_max")
+
+    def solve(n: int) -> tuple[OperatingPoint, np.ndarray, np.ndarray]:
+        from scipy.interpolate import CubicSpline
+        grid = np.concatenate(([0.0], np.geomspace(lo_floor, e_max, n)))
+        curve = superhet_transfer(cfg, e_to_omega, grid, probe_power_in)
+        spl = CubicSpline(grid, curve)
+        candidates = grid[3:-2]
+        op = optimize_lo(lambda e: float(spl(e)), candidates,
+                         cfg.lambda_probe, rin_db_per_hz=rin_db_per_hz,
+                         detector_nep_w_per_rthz=detector_nep_w_per_rthz)
+        if op.e_lo in (candidates[0], candidates[-1]):
+            raise IntegrityError(
+                f"superhet optimum E_LO = {op.e_lo:.4g} V/m sits on the scan "
+                f"boundary [{candidates[0]:.4g}, {candidates[-1]:.4g}] V/m; "
+                "the true optimum may lie outside it — widen the LO range.")
+        return op, grid, curve
+
+    n = n_points
+    prev, _, _ = solve(n)
+    for _ in range(max_doublings):
+        n *= 2
+        op, grid, curve = solve(n)
+        d_nef = abs(op.nef - prev.nef) / op.nef
+        d_lo = abs(op.e_lo - prev.e_lo) / op.e_lo
+        if d_nef <= rtol:
+            return ConvergedOperatingPoint(op, grid, curve, n, d_nef, d_lo)
+        prev = op
+    raise IntegrityError(
+        f"superhet NEF did not converge to {rtol:.1%} within {max_doublings} "
+        f"LO-grid doublings (last: {prev.nef:.4g} (V/m)/rtHz at {n} points).")

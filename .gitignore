@@ -21,6 +21,7 @@ findings/*.md
 !findings/d3-trade-law*
 !findings/literature-*
 !findings/reanalysis-*
+!findings/t3-cosite*
 data/cache/
 
 # Third-party paper text kept locally for spec work — not ours to redistribute.
