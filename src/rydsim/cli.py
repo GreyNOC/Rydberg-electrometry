@@ -30,11 +30,11 @@ from .experiment import (
     LadderConfig,
     at_experiment,
     at_finding,
+    converged_superhet_operating_point,
     spectrum,
-    superhet_transfer,
 )
-from .provenance import Finding
-from .superhet import min_detectable_field, optimize_lo
+from .provenance import Finding, IntegrityError
+from .superhet import min_detectable_field
 
 BANNER = f"GreyNOC RydSim v{__version__} — Rydberg electrometry simulator"
 # Resolved at call time, not import time: in a frozen build the location
@@ -191,18 +191,21 @@ def cmd_superhet(args) -> int:
             return 2
     d = cfg.rf_dipole
     e_to_omega = d / HBAR
-    e_grid = np.linspace(args.e_min, args.e_max, args.lo_points)
     print(BANNER)
-    print(f"[superhet] scanning {args.lo_points} LO points "
-          f"E in [{args.e_min}, {args.e_max}] V/m ...")
-    p_curve = superhet_transfer(cfg, e_to_omega, e_grid, args.probe_power_w,
-                                n_doppler_nodes=args.doppler_nodes)
-    from scipy.interpolate import CubicSpline
-    transfer = CubicSpline(e_grid, p_curve)
-    op = optimize_lo(lambda e: float(transfer(e)),
-                     e_grid[2:-2], cfg.lambda_probe,
-                     rin_db_per_hz=args.rin_db,
-                     detector_nep_w_per_rthz=args.nep)
+    print(f"[superhet] log-spaced LO scan E in [{args.e_min}, {args.e_max}] "
+          f"V/m from {args.lo_points} points, refined to convergence ...")
+    try:
+        conv = converged_superhet_operating_point(
+            cfg, e_to_omega, args.e_max, args.probe_power_w,
+            e_min=args.e_min, n_points=args.lo_points,
+            rin_db_per_hz=args.rin_db, detector_nep_w_per_rthz=args.nep)
+    except IntegrityError as exc:
+        print(f"refused: {exc}", file=sys.stderr)
+        return 3
+    op = conv.op
+    transfer = conv.spline()
+    print(f"LO grid converged at {conv.n_points} points "
+          f"(NEF change on last doubling {conv.nef_rel_change:.2%})")
     nef_cm = op.nef / 100.0  # V/m -> V/cm
     print(f"optimal LO field:   {op.e_lo:.4g} V/m "
           f"(Omega_LO = {op.e_lo*e_to_omega/(2*np.pi)/1e6:.3f} MHz)")
@@ -240,7 +243,10 @@ def cmd_superhet(args) -> int:
                     "rin_db": args.rin_db, "nep": args.nep,
                     "lo_grid": [args.e_min, args.e_max, args.lo_points]},
             uncertainty_budget={
-                "LO grid resolution": f"{(args.e_max-args.e_min)/args.lo_points:.3g} V/m",
+                "LO grid convergence": (
+                    f"NEF moved {conv.nef_rel_change:.2%}, E_LO moved "
+                    f"{conv.e_lo_rel_change:.2%} on the last grid doubling "
+                    f"({conv.n_points} log-spaced points)"),
                 "transfer-curve model": "optical-depth chain pending spec 05 "
                 "integration; slope-normalized NEF insensitive to overall scale",
             },
@@ -332,9 +338,13 @@ def build_parser() -> argparse.ArgumentParser:
                     help="laser RIN [dB/Hz]")
     ph.add_argument("--nep", type=float, default=1e-12,
                     help="detector NEP [W/rtHz]")
-    ph.add_argument("--e-min", type=float, default=0.05)
-    ph.add_argument("--e-max", type=float, default=20.0)
-    ph.add_argument("--lo-points", type=int, default=60)
+    ph.add_argument("--e-min", type=float, default=0.002,
+                    help="lower end of the log-spaced LO scan [V/m]")
+    ph.add_argument("--e-max", type=float, default=20.0,
+                    help="upper end of the LO scan [V/m]")
+    ph.add_argument("--lo-points", type=int, default=96,
+                    help="initial log-spaced LO points; doubled until the "
+                         "NEF converges to 1%%")
     ph.add_argument("--doppler-nodes", type=int, default=24)
     ph.add_argument("--finding", action="store_true")
     ph.set_defaults(func=cmd_superhet)
