@@ -395,8 +395,9 @@ def cmd_cosite(args) -> int:
                 "theta quadrature": "converged to 1e-9 relative by node "
                                     "doubling at every scan point",
                 "quasi-static model": (
-                    f"offsets held below {cs.QUASI_STATIC_MAX_FRACTION:g} x IBW; "
-                    "single-pole roll-off there is <= 0.04 dB"),
+                    f"offsets held below {cs.QUASI_STATIC_MAX_FRACTION:g} x IBW, "
+                    "where the blocking-level error vs the exact Floquet "
+                    "solver is <= ~0.3% (scales as 7 (Delta/IBW)^2)"),
             },
             cross_checks=[{"quantity": xc.quantity, "methods": xc.methods,
                            "spread_rel": xc.spread_rel,
@@ -419,6 +420,184 @@ def cmd_cosite(args) -> int:
             ],
         ).finalize(__version__)
         _write_finding(f, "t3-cosite")
+    return 0
+
+
+def cmd_selectivity(args) -> int:
+    """T3: blocking level vs interferer offset, in and out of band."""
+    from . import floquet as fq
+    from .lindblad import LadderSystem
+    from .provenance import CrossCheck
+
+    cfg = _load_config(args)
+    _maybe_save_config(args, cfg)
+    if cfg.doppler:
+        print("error: selectivity uses the single-velocity-class Floquet "
+              "solver; pass --no-doppler to acknowledge that (Doppler "
+              "averaging is not implemented for it)", file=sys.stderr)
+        return 2
+    if (args.offsets < 2 or args.offset_min_khz <= 0
+            or args.offset_max_mhz * 1e3 <= args.offset_min_khz
+            or args.signal_offset_khz <= 0 or args.ei_max_ratio <= 0.01
+            or args.ei_points < 2):
+        print("error: need --offsets >= 2, 0 < offset-min < offset-max, "
+              "--signal-offset-khz > 0, --ei-max-ratio > 0.01, "
+              "--ei-points >= 2", file=sys.stderr)
+        return 2
+    tau = 2 * np.pi
+    base = LadderSystem(
+        omegas=[cfg.omega_probe, cfg.omega_coupling, max(cfg.omega_rf, 1.0)],
+        deltas=[cfg.delta_probe, cfg.delta_coupling, cfg.delta_rf],
+        decays=[0.0, cfg.gamma_e, cfg.gamma_r, cfg.gamma_rp],
+        dephasings=[0.0, 0.0, cfg.deph_r, cfg.deph_r], transit=cfg.transit)
+    print(BANNER)
+    try:
+        if cfg.omega_rf > 0:
+            w_l = cfg.omega_rf
+            lo_note = "user-set (--rf-rabi-mhz)"
+        else:
+            w_l = fq.optimal_thin_lo(base, 4 * cfg.omega_coupling)
+            lo_note = "steepest-slope point of the thin transfer curve"
+        om = base.omegas.copy()
+        om[2] = w_l
+        base = LadderSystem(omegas=om, deltas=base.deltas, decays=base.decays,
+                            dephasings=base.dephasings, transit=base.transit)
+        solver = fq.TwoToneFloquet(base)
+        offsets = tau * np.geomspace(args.offset_min_khz * 1e3,
+                                     args.offset_max_mhz * 1e6, args.offsets)
+        grid = np.geomspace(0.01, args.ei_max_ratio, args.ei_points) * w_l
+        d_s = tau * args.signal_offset_khz * 1e3
+        d_dc = tau * 10.0
+        curve = fq.selectivity_curve(solver, offsets, d_s, grid)
+        curve_dc = fq.selectivity_curve(solver, offsets, d_dc, grid)
+        s_crit = fq.ac_stark_shift_crit(base)
+        checks: list[CrossCheck] = []
+        far = curve_dc[-1]
+        if far.blocking_rabi is not None:
+            checks.append(CrossCheck(
+                quantity=(f"far-offset blocking at {far.offset / tau / 1e6:.4g} "
+                          "MHz (signal -> DC)"),
+                methods={"Floquet": far.blocking_rabi / w_l,
+                         "AC-Stark law": np.sqrt(4 * far.offset * s_crit) / w_l},
+                unit="x Omega_LO", tolerance_rel=0.05))
+        # In-band anchor: at 0.005 x IBW the quasi-static error is ~1e-4
+        # (it scales as (Delta/IBW)^2), so Floquet must reproduce the
+        # independent phase-average blocking level there.
+        from .lindblad import ibw_3db
+        ibw = ibw_3db(base, 3, delta_max=tau * 100e6) / tau
+        near_off = tau * 0.005 * ibw
+        near, _ = fq.blocking_rabi(solver, near_off, d_dc, grid)
+        qs = fq.quasi_static_thin_blocking(base, grid)
+        if near is not None and qs is not None:
+            checks.append(CrossCheck(
+                quantity=(f"in-band blocking at {near_off / tau / 1e3:.4g} kHz "
+                          "= 0.005 x IBW (signal -> DC)"),
+                methods={"Floquet": near / w_l,
+                         "quasi-static phase average": qs / w_l},
+                unit="x Omega_LO", tolerance_rel=2e-3))
+        for c in checks:
+            c.require()
+    except IntegrityError as exc:
+        print(f"refused: {exc}", file=sys.stderr)
+        return 3
+
+    d_si = cfg.rf_dipole
+    to_field = (lambda w: HBAR * w / d_si) if d_si else None
+
+    def cell(w: float | None) -> str:
+        return f"{w / w_l:9.4f}" if w is not None else f"{'>' + format(args.ei_max_ratio, 'g'):>9}"
+
+    print(f"LO: Omega = {w_l / tau / 1e6:.4g} MHz ({lo_note})"
+          + (f" = {to_field(w_l):.4g} V/m" if to_field else ""))
+    print(f"atomic response bandwidth (resolvent): {ibw / 1e3:.4g} kHz; "
+          "offsets below 0.02 x IBW are quasi-static")
+    print(f"hidden signal at +{args.signal_offset_khz:g} kHz; 'DC' column "
+          "uses +10 Hz (the AC-Stark-law limit)")
+    print(f"\n{'offset':>12} {'1dB block':>9} {'1dB block':>9} {'AC-Stark':>9}  "
+          f"(x Omega_LO)\n{'':>12} {'@signal':>9} {'@DC':>9} {'law':>9}")
+    rows = []
+    for p, q in zip(curve, curve_dc):
+        law = np.sqrt(4 * p.offset * s_crit)
+        f_txt = (f"{p.offset / tau / 1e6:9.4g} MHz")
+        print(f"{f_txt:>12} {cell(p.blocking_rabi)} {cell(q.blocking_rabi)} "
+              f"{law / w_l:9.4f}")
+        rows.append((p, q, law))
+    hi = [(p.offset, p.blocking_rabi) for p in curve[len(curve) * 3 // 4:]
+          if p.blocking_rabi is not None]
+    slope_txt = "not enough far-offset points"
+    if len(hi) >= 2:
+        k = np.polyfit(np.log10([o for o, _ in hi]),
+                       np.log10([b for _, b in hi]), 1)[0]
+        slope_txt = (f"{20 * k:.2f} dB/decade in field "
+                     f"(exponent {k:.3f}; AC-Stark limit 0.5 = 10 dB/decade)")
+    print(f"\nfar-offset rejection: {slope_txt}")
+    print(f"AC-Stark critical light shift: s_crit = {s_crit / tau / 1e3:.4g} kHz "
+          "-> Omega_block = sqrt(4 Delta s_crit)")
+    for c in checks:
+        print(f"cross-check: {c.quantity}: methods agree to {c.spread_rel:.2%}")
+
+    if args.finding:
+        def fmt(w: float | None) -> str:
+            if w is None:
+                return f"> {args.ei_max_ratio:g} x Omega_LO"
+            out = f"{w / w_l:.4g} x Omega_LO"
+            return out + (f" ({to_field(w):.4g} V/m)" if to_field else "")
+        f = Finding(
+            title=f"T3 selectivity: blocking vs interferer offset [{cfg.name}]",
+            result={
+                "LO": (f"Omega_LO = {w_l / tau / 1e6:.4g} MHz, {lo_note}"
+                       + (f", {to_field(w_l):.4g} V/m" if to_field else "")),
+                "hidden-signal offset": f"{args.signal_offset_khz:g} kHz",
+                "atomic response bandwidth (resolvent)": f"{ibw:.4g} Hz",
+                "far-offset rejection": slope_txt,
+                "AC-Stark critical shift": (
+                    f"s_crit = {s_crit / tau / 1e3:.4g} kHz; asymptotic "
+                    "1 dB blocking Omega_I = sqrt(4 Delta s_crit)"),
+                "selectivity (offset | block @signal | block @DC | AC-Stark law)": [
+                    f"{p.offset / tau / 1e6:.4g} MHz | {fmt(p.blocking_rabi)} | "
+                    f"{fmt(q.blocking_rabi)} | {law / w_l:.4g} x Omega_LO"
+                    for p, q, law in rows],
+            },
+            config={**cfg.to_dict(), "omega_lo": w_l,
+                    "offset_min_khz": args.offset_min_khz,
+                    "offset_max_mhz": args.offset_max_mhz,
+                    "offsets": args.offsets,
+                    "signal_offset_khz": args.signal_offset_khz,
+                    "ei_max_ratio": args.ei_max_ratio,
+                    "ei_points": args.ei_points},
+            uncertainty_budget={
+                "Floquet truncation": "sideband count doubled until the gain "
+                                      "moved < 1e-8 (relative) at every point",
+                "blocking interpolation": (
+                    f"log-interpolated on a {args.ei_points}-point log grid "
+                    f"from 0.01 to {args.ei_max_ratio:g} x Omega_LO"),
+                "time-domain agreement": "harmonic balance vs direct OBE "
+                                         "integration agrees to ~1e-8 "
+                                         "(tests/test_floquet.py)",
+            },
+            cross_checks=[{"quantity": c.quantity, "methods": c.methods,
+                           "spread_rel": c.spread_rel,
+                           "tolerance_rel": c.tolerance_rel} for c in checks],
+            constants_used=list(cfg.sources),
+            validation_state="see rydsim validate (tests/test_floquet.py)",
+            caveats=list(STANDING_CAVEATS) + [
+                "Single velocity class: no Doppler averaging. Hot-vapor "
+                "selectivity will differ.",
+                "Optically thin readout (probe absorption ~ Im rho_10): absolute "
+                "blocking levels differ from the thick-medium `cosite` ones; "
+                "the offset dependence is what this finding claims.",
+                "Gain desensitization only: the noise budget is not "
+                "re-evaluated (constant to first order in the thin limit).",
+                "4-level ladder: interferers far enough off to reach OTHER "
+                "Rydberg transitions are outside the model. Check the real "
+                "level structure before trusting GHz offsets.",
+                "Blocking depends on the hidden signal's own offset: the "
+                "interferer's light shift opens a slow (Rydberg-decay-scale) "
+                "response mode, so a kHz-offset signal is blocked earlier than "
+                "a near-DC one. Both columns are reported.",
+            ],
+        ).finalize(__version__)
+        _write_finding(f, "t3-selectivity")
     return 0
 
 
@@ -537,6 +716,21 @@ def build_parser() -> argparse.ArgumentParser:
                     help="interferer harmonics to report as spurs")
     pc.add_argument("--finding", action="store_true")
     pc.set_defaults(func=cmd_cosite)
+
+    pl = sub.add_parser(
+        "selectivity",
+        help="T3: blocking level vs interferer offset (Floquet, cold)")
+    _add_common_physics_args(pl)
+    pl.add_argument("--offset-min-khz", type=float, default=50.0)
+    pl.add_argument("--offset-max-mhz", type=float, default=50.0)
+    pl.add_argument("--offsets", type=int, default=16,
+                    help="log-spaced interferer offsets")
+    pl.add_argument("--signal-offset-khz", type=float, default=13.0)
+    pl.add_argument("--ei-max-ratio", type=float, default=100.0,
+                    help="largest interferer Rabi frequency, x Omega_LO")
+    pl.add_argument("--ei-points", type=int, default=41)
+    pl.add_argument("--finding", action="store_true")
+    pl.set_defaults(func=cmd_selectivity)
 
     pv = sub.add_parser("validate", help="run the scientific validation suite")
     pv.add_argument("-v", "--verbose", action="store_true")

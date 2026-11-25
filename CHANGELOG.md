@@ -14,17 +14,36 @@ versions may change interfaces).
   the interferer-shifted probe power, interferer spur levels at n·Δ_I, and a
   fitted weak-interferer law. Cross-checked against brute-force two-tone DFT
   demodulation (agreement ~1e-11) and exact quadratic-transfer identities.
-  Refuses offsets beyond 0.1 × the atomic response bandwidth (needs a
+  Refuses offsets beyond 0.02 × the atomic response bandwidth (needs a
   Floquet/time-domain solver, not implemented), signal offsets on an
   interferer harmonic, and any envelope outside the sampled transfer curve.
 - `findings/t3-cosite-75df1de4cd4322db` — Rb-87 / 1000 ea0 default: weak
   interferers desensitize as 11.2 dB × (E_I/E_LO)^2.00; 1 dB blocking at
   0.31 × E_LO; a hidden signal stays detectable up to 121 dB below the
   interferer (1 s, SNR 1).
+- `rydsim.floquet` and `rydsim selectivity` — two-tone harmonic-balance
+  (Floquet) solver for interferers at ANY offset, single velocity class,
+  optically thin readout. Lifts the quasi-static limit of `cosite`. Validated
+  against direct OBE time integration (~1e-8), the quasi-static phase average
+  as (Delta/IBW)^2 (2e-4 at 0.005 x IBW), and a second-order AC-Stark law at
+  large offsets (0.2% at 0.5-2 GHz).
+- `findings/t3-selectivity-b492ee3d758a0913` — 1 dB blocking vs interferer
+  offset, 50 kHz-50 MHz (Rb-87 ladder, cold, thin). Far-offset rejection is
+  only ~10 dB/decade: an off-resonant interferer on the same transition
+  light-shifts the Rydberg levels by Omega_I^2/(4 Delta), so blocking grows as
+  sqrt(Delta) — half the slope of a single-pole filter. The light shift also
+  opens a slow response mode, so a 13 kHz hidden signal is blocked 8-9%
+  earlier than a near-DC one.
 - `experiment.converged_superhet_operating_point()` — log-spaced LO scan
   refined until the NEF converges, with boundary and non-convergence refusals.
 
 ### Fixed
+- **`cosite` quasi-static gate was too loose for blocking claims.** It
+  admitted offsets up to 0.1 × IBW on a single-pole GAIN argument (0.04 dB).
+  Measured against the exact two-tone Floquet solver, the 1 dB blocking level
+  errs by ~7 (Delta/IBW)^2: 7% at 0.1 × IBW. Gate tightened to 0.02 × IBW
+  (<= 0.3%). The committed `t3-cosite-75df1de4cd4322db` finding sits at
+  0.005 × IBW and is unaffected.
 - **CLI `superhet` and the GUI superhet tab overstated NEF ~8×.** A linear
   60-point LO grid on [0.05, 20] V/m skipped the low-field optimum: 8.9 vs a
   converged 1.116 nV/cm/√Hz for the Rb-87 / 1000 ea0 default (spline-free

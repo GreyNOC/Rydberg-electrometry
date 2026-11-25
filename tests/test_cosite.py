@@ -164,7 +164,14 @@ def test_out_of_band_offset_refused():
 
 
 def test_in_band_offsets_accepted():
-    cs.require_quasi_static([1e3, -5e4], ibw_hz=1e6)
+    cs.require_quasi_static([1e3, -2e4], ibw_hz=1e6)
+
+
+def test_gate_is_tight_enough_for_blocking_claims():
+    """0.05 x IBW costs ~1.8% in blocking level (tests/test_floquet.py);
+    the gate must refuse it."""
+    with pytest.raises(IntegrityError):
+        cs.require_quasi_static([5e4], ibw_hz=1e6)
 
 
 @pytest.mark.parametrize("ibw", [0.0, -1.0, float("nan"), float("inf")])
